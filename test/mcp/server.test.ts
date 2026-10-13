@@ -1,0 +1,179 @@
+// TASK-A-074 (REQ-010 R10, AC-9): the MCP server a worker is given — six tools, each one HTTP call to the CAW API as
+// `X-CAW-Actor: worker:<CAW_WORKER_ID>`, so the API's rules apply unchanged. Tested through the SDK's own client:
+// in memory against an in-process app (PGlite, fake Blueprint with recorded answers), and once over real stdio.
+import { afterEach, expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { createMcpServer } from "../../src/mcp/server";
+import { chainOf3, newCard, setup } from "../helpers/api";
+
+const closers: (() => Promise<void> | void)[] = [];
+afterEach(async () => { while (closers.length) await closers.pop()!(); });
+
+/** a client connected in memory to a CAW MCP server acting as worker `workerId` over the in-process app */
+async function connect(app: { request: (u: string, i?: RequestInit) => Response | Promise<Response> }, workerId: string) {
+  const server = createMcpServer({
+    apiUrl: "http://caw.test", workerId,
+    fetch: (input, init) => Promise.resolve(app.request(new URL(input).pathname + new URL(input).search, init)),
+  });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test", version: "1" });
+  await Promise.all([server.connect(a), client.connect(b)]);
+  closers.push(() => client.close());
+  const call = async (name: string, args: Record<string, unknown> = {}) => {
+    const r = await client.callTool({ name, arguments: args });
+    const text = (r.content as { type: string; text: string }[])[0]!.text;
+    // a result of the API is JSON; an input the SDK itself refuses (before any API call) is plain text
+    let json: any = null;
+    try { json = JSON.parse(text); } catch { /* plain text */ }
+    return { isError: r.isError === true, json, text };
+  };
+  return { client, call };
+}
+
+async function world() {
+  const s = await setup();
+  const chain = await chainOf3(s.call);
+  await s.call("POST", `/v1/projects/${chain.project.id}/chain/edges`, { from: chain.a.id, to: chain.b.id });
+  const c1 = (await newCard(s.call, chain.project.id, { assigneeId: chain.a.id, title: "งานของ Ann" })).json;
+  return { ...s, ...chain, c1 };
+}
+
+test("lists the six tools with their input schemas", async () => {
+  const w = await world();
+  const { client } = await connect(w.app, w.a.id);
+  const tools = (await client.listTools()).tools;
+  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "comment", "hand_off", "my_cards", "set_status"]);
+  const req = (name: string) => (tools.find((t) => t.name === name)!.inputSchema as { required?: string[] }).required ?? [];
+  expect(req("my_cards")).toEqual([]);
+  expect(req("card_context")).toEqual(["cardId"]);
+  expect(req("comment").sort()).toEqual(["cardId", "text"]);
+  expect(req("hand_off").sort()).toEqual(["cardId", "text", "toWorkerId"]);
+  expect(req("set_status").sort()).toEqual(["cardId", "status"]);
+  expect(req("ask_operator").sort()).toEqual(["cardId", "cases", "proposedDefault", "text"]);
+  for (const t of tools) expect(t.description).toBeString();
+});
+
+test("my_cards: the worker's own cards, workable first, across projects — or one project; nobody else's", async () => {
+  const w = await world();
+  const second = (await w.call("POST", "/v1/projects", { blueprintProjectId: (await import("../helpers/fake-blueprint")).BP_PROJECT, version: 2 })).json;
+  await w.call("POST", `/v1/projects/${second.id}/chain/members`, { workerId: w.a.id });
+  const waiting = (await newCard(w.call, w.project.id, { assigneeId: w.a.id, dependsOn: [w.c1.id], title: "รอ c1" })).json; // not workable
+  const other = (await newCard(w.call, second.id, { assigneeId: w.a.id, title: "โปรเจกต์สอง" })).json;
+  await newCard(w.call, w.project.id, { assigneeId: w.b.id, title: "ของ Ben" });
+  const { call } = await connect(w.app, w.a.id);
+
+  const all = await call("my_cards");
+  expect(all.isError).toBe(false);
+  expect(all.json.cards.map((c: any) => [c.title, c.workable])).toEqual([["งานของ Ann", true], ["โปรเจกต์สอง", true], ["รอ c1", false]]);
+  expect(all.json.cards.every((c: any) => c.assigneeId === w.a.id)).toBe(true);
+  expect((await call("my_cards", { projectId: second.id })).json.cards.map((c: any) => c.id)).toEqual([other.id]);
+  expect((await call("my_cards", { projectId: w.project.id })).json.cards.map((c: any) => c.id)).toEqual([w.c1.id, waiting.id]);
+  expect((await (await connect(w.app, w.c.id)).call("my_cards")).json.cards).toEqual([]); // Cat has none
+  const nf = await call("my_cards", { projectId: "00000000-0000-0000-0000-000000000099" });
+  expect([nf.isError, nf.json.error.code]).toEqual([true, "not_found"]);
+});
+
+test("card_context: the API's CardContext — Blueprint's spec untouched, notes, decisions", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id);
+  await call("comment", { cardId: w.c1.id, text: "เริ่มอ่าน spec" });
+  const r = await call("card_context", { cardId: w.c1.id });
+  expect(r.isError).toBe(false);
+  const direct = (await w.call("GET", `/v1/cards/${w.c1.id}/context`)).json;
+  expect(r.json).toEqual(direct);
+  expect(r.json.spec.part.key).toBe("STEP-004");
+  expect(r.json.notes.map((n: any) => n.text)).toEqual(["เริ่มอ่าน spec"]);
+  const missing = await call("card_context", { cardId: "00000000-0000-0000-0000-000000000099" });
+  expect([missing.isError, missing.json.error.code]).toEqual([true, "not_found"]);
+});
+
+test("comment · set_status · hand_off · ask_operator: each one API call as this worker; the results are the API's JSON", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id);
+
+  const note = await call("comment", { cardId: w.c1.id, text: "ข้อสังเกต" });
+  expect(note.json).toMatchObject({ type: "comment", actor: `worker:${w.a.id}`, text: "ข้อสังเกต" });
+
+  const st = await call("set_status", { cardId: w.c1.id, status: "doing" });
+  expect(st.json).toMatchObject({ id: w.c1.id, status: "doing" });
+  const bad = await call("set_status", { cardId: w.c1.id, status: "blocked" }); // not in the enum: refused by the tool's schema, no API call
+  expect([bad.isError, bad.text]).toEqual([true, expect.stringContaining("status")]);
+  expect((await w.call("GET", `/v1/cards/${w.c1.id}`)).json.status).toBe("doing");
+
+  const q = await call("ask_operator", { cardId: w.c1.id, text: "ห้องใหญ่ต้องอนุมัติไหม", proposedDefault: "ต้อง", cases: ["เล็ก", "ใหญ่"] });
+  expect(q.isError).toBe(false);
+  expect(q.json).toMatchObject({ kind: "question", assigneeId: null, question: { text: "ห้องใหญ่ต้องอนุมัติไหม", proposedDefault: "ต้อง", cases: ["เล็ก", "ใหญ่"] } });
+  const waiting = await call("set_status", { cardId: w.c1.id, status: "doing" });
+  expect([waiting.isError, waiting.json.error.code]).toEqual([true, "waiting_on_question"]); // the asking card now waits
+
+  await w.call("POST", `/v1/cards/${q.json.id}/answer`, { answer: "ต้อง" });
+  const hand = await call("hand_off", { cardId: w.c1.id, toWorkerId: w.b.id, text: "ทำหน้าจอต่อ" });
+  expect(hand.json).toMatchObject({ id: w.c1.id, assigneeId: w.b.id });
+  const events = (await w.call("GET", `/v1/projects/${w.project.id}/events?limit=500`)).json.events;
+  expect(events.filter((e: any) => e.actor === `worker:${w.a.id}`).map((e: any) => e.type)).toEqual(["card.commented", "card.status_set", "card.question_opened", "card.handed_off"]);
+});
+
+test("the API's rules apply unchanged: another worker's card → the 403 code as a tool error; off the chain → chain_broken with allowed", async () => {
+  const w = await world();
+  const ben = await connect(w.app, w.b.id); // c1 is Ann's
+  for (const [tool, args] of [
+    ["comment", { cardId: w.c1.id, text: "x" }], ["set_status", { cardId: w.c1.id, status: "done" }],
+    ["hand_off", { cardId: w.c1.id, toWorkerId: w.c.id, text: "x" }], ["ask_operator", { cardId: w.c1.id, text: "t", proposedDefault: "d", cases: ["c"] }],
+  ] as const) {
+    const r = await ben.call(tool, args);
+    expect([tool, r.isError, r.json.error.code]).toEqual([tool, true, "not_your_card"]);
+  }
+  const ann = await connect(w.app, w.a.id);
+  const broken = await ann.call("hand_off", { cardId: w.c1.id, toWorkerId: w.c.id, text: "ส่ง QA" }); // Ann → Cat has no edge
+  expect([broken.isError, broken.json.error.code, broken.json.error.details]).toEqual([true, "chain_broken", { from: w.a.id, allowed: [w.b.id] }]);
+});
+
+test("a worker CAW does not know: writes come back as the unknown_worker tool error", async () => {
+  const w = await world();
+  const ghost = await connect(w.app, "33333333-3333-4333-8333-333333333333");
+  const r = await ghost.call("comment", { cardId: w.c1.id, text: "x" });
+  expect([r.isError, r.json.error.code]).toEqual([true, "unknown_worker"]);
+});
+
+test("CAW unreachable → a tool error caw_unreachable, not a crash", async () => {
+  const w = await world();
+  const server = createMcpServer({ apiUrl: "http://127.0.0.1:1", workerId: w.a.id });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "t", version: "1" });
+  await Promise.all([server.connect(a), client.connect(b)]);
+  closers.push(() => client.close());
+  const r = await client.callTool({ name: "card_context", arguments: { cardId: w.c1.id } });
+  expect(r.isError).toBe(true);
+  expect(JSON.parse((r.content as { text: string }[])[0]!.text).error.code).toBe("caw_unreachable");
+});
+
+test("over real stdio: `bun run src/mcp/server.ts` with CAW_API_URL + CAW_WORKER_ID lists the tools and runs my_cards against a running CAW API", async () => {
+  const w = await world();
+  const api = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: w.app.fetch });
+  closers.push(() => api.stop(true));
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: ["run", "src/mcp/server.ts"], cwd: new URL("../..", import.meta.url).pathname,
+    env: { ...(process.env as Record<string, string>), CAW_API_URL: `http://127.0.0.1:${api.port}`, CAW_WORKER_ID: w.a.id },
+  });
+  const client = new Client({ name: "stdio-test", version: "1" });
+  await client.connect(transport);
+  closers.push(() => client.close());
+  expect((await client.listTools()).tools).toHaveLength(6);
+  const r = await client.callTool({ name: "my_cards", arguments: {} });
+  const cards = JSON.parse((r.content as { text: string }[])[0]!.text).cards;
+  expect(cards.map((c: any) => c.title)).toEqual(["งานของ Ann"]);
+});
+
+test("CAW_WORKER_ID is required: without it the server refuses to start — one line, exit 1", async () => {
+  const env = { ...(process.env as Record<string, string>) };
+  delete env.CAW_WORKER_ID;
+  for (const value of [undefined, ""]) {
+    const proc = Bun.spawn([process.execPath, "run", "src/mcp/server.ts"], { cwd: new URL("../..", import.meta.url).pathname, env: { ...env, ...(value === undefined ? {} : { CAW_WORKER_ID: value }) }, stdout: "pipe", stderr: "pipe" });
+    const code = await proc.exited;
+    const err = (await new Response(proc.stderr).text()).trim().split("\n").filter((l) => !l.startsWith("error: script"));
+    expect([value, code, err.length]).toEqual([value, 1, 1]);
+    expect(err[0]).toContain("CAW_WORKER_ID");
+  }
+});

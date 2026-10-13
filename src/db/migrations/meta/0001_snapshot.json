@@ -1,0 +1,1062 @@
+{
+  "id": "29658fe9-00a4-4b35-b987-b2f88c6ebdc7",
+  "prevId": "b3336d91-b2fe-497f-b38a-5260fb144c22",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "caw.card_deps": {
+      "name": "card_deps",
+      "schema": "caw",
+      "columns": {
+        "card_id": {
+          "name": "card_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "depends_on_id": {
+          "name": "depends_on_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "card_deps_card_id_cards_id_fk": {
+          "name": "card_deps_card_id_cards_id_fk",
+          "tableFrom": "card_deps",
+          "columnsFrom": [
+            "card_id"
+          ],
+          "tableTo": "cards",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "card_deps_depends_on_id_cards_id_fk": {
+          "name": "card_deps_depends_on_id_cards_id_fk",
+          "tableFrom": "card_deps",
+          "columnsFrom": [
+            "depends_on_id"
+          ],
+          "tableTo": "cards",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "card_deps_card_id_depends_on_id_pk": {
+          "name": "card_deps_card_id_depends_on_id_pk",
+          "columns": [
+            "card_id",
+            "depends_on_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "caw.cards": {
+      "name": "cards",
+      "schema": "caw",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "number": {
+          "name": "number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "todo": {
+          "name": "todo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assignee_id": {
+          "name": "assignee_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "anchor_key": {
+          "name": "anchor_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "anchor_version": {
+          "name": "anchor_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "spec_changed_version": {
+          "name": "spec_changed_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "question": {
+          "name": "question",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "answer": {
+          "name": "answer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "cards_project_id_projects_id_fk": {
+          "name": "cards_project_id_projects_id_fk",
+          "tableFrom": "cards",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "tableTo": "projects",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "cards_assignee_id_workers_id_fk": {
+          "name": "cards_assignee_id_workers_id_fk",
+          "tableFrom": "cards",
+          "columnsFrom": [
+            "assignee_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "cards_project_number": {
+          "name": "cards_project_number",
+          "columns": [
+            "project_id",
+            "number"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "cards_kind": {
+          "name": "cards_kind",
+          "value": "\"caw\".\"cards\".\"kind\" in ('work','question')"
+        },
+        "cards_status": {
+          "name": "cards_status",
+          "value": "\"caw\".\"cards\".\"status\" in ('todo','doing','review','done','stuck')"
+        },
+        "cards_title_length": {
+          "name": "cards_title_length",
+          "value": "char_length(\"caw\".\"cards\".\"title\") between 1 and 200"
+        },
+        "cards_todo_length": {
+          "name": "cards_todo_length",
+          "value": "char_length(\"caw\".\"cards\".\"todo\") <= 8000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "caw.chain_edges": {
+      "name": "chain_edges",
+      "schema": "caw",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_worker_id": {
+          "name": "from_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "to_worker_id": {
+          "name": "to_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "chain_edges_project_id_projects_id_fk": {
+          "name": "chain_edges_project_id_projects_id_fk",
+          "tableFrom": "chain_edges",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "tableTo": "projects",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "chain_edges_from_worker_id_workers_id_fk": {
+          "name": "chain_edges_from_worker_id_workers_id_fk",
+          "tableFrom": "chain_edges",
+          "columnsFrom": [
+            "from_worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "chain_edges_to_worker_id_workers_id_fk": {
+          "name": "chain_edges_to_worker_id_workers_id_fk",
+          "tableFrom": "chain_edges",
+          "columnsFrom": [
+            "to_worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "chain_edges_project_id_from_worker_id_to_worker_id_pk": {
+          "name": "chain_edges_project_id_from_worker_id_to_worker_id_pk",
+          "columns": [
+            "project_id",
+            "from_worker_id",
+            "to_worker_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "caw.chain_members": {
+      "name": "chain_members",
+      "schema": "caw",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "chain_members_project_id_projects_id_fk": {
+          "name": "chain_members_project_id_projects_id_fk",
+          "tableFrom": "chain_members",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "tableTo": "projects",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "chain_members_worker_id_workers_id_fk": {
+          "name": "chain_members_worker_id_workers_id_fk",
+          "tableFrom": "chain_members",
+          "columnsFrom": [
+            "worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "chain_members_project_id_worker_id_pk": {
+          "name": "chain_members_project_id_worker_id_pk",
+          "columns": [
+            "project_id",
+            "worker_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "caw.events": {
+      "name": "events",
+      "schema": "caw",
+      "columns": {
+        "seq": {
+          "name": "seq",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "at": {
+          "name": "at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "data": {
+          "name": "data",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "caw.follow_state": {
+      "name": "follow_state",
+      "schema": "caw",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "last_pulled_version": {
+          "name": "last_pulled_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_pull_at": {
+          "name": "last_pull_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "follow_state_project_id_projects_id_fk": {
+          "name": "follow_state_project_id_projects_id_fk",
+          "tableFrom": "follow_state",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "tableTo": "projects",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "caw.hops": {
+      "name": "hops",
+      "schema": "caw",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_by": {
+          "name": "claimed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "card_id": {
+          "name": "card_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tokens_in": {
+          "name": "tokens_in",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tokens_out": {
+          "name": "tokens_out",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "hops_project_id_projects_id_fk": {
+          "name": "hops_project_id_projects_id_fk",
+          "tableFrom": "hops",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "tableTo": "projects",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "hops_run_id_runs_id_fk": {
+          "name": "hops_run_id_runs_id_fk",
+          "tableFrom": "hops",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "tableTo": "runs",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "hops_card_id_cards_id_fk": {
+          "name": "hops_card_id_cards_id_fk",
+          "tableFrom": "hops",
+          "columnsFrom": [
+            "card_id"
+          ],
+          "tableTo": "cards",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "hops_worker_id_workers_id_fk": {
+          "name": "hops_worker_id_workers_id_fk",
+          "tableFrom": "hops",
+          "columnsFrom": [
+            "worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "hops_outcome": {
+          "name": "hops_outcome",
+          "value": "\"caw\".\"hops\".\"outcome\" is null or \"caw\".\"hops\".\"outcome\" in ('commented','handed_off','status','asked','failed','stopped','interrupted')"
+        },
+        "hops_note_length": {
+          "name": "hops_note_length",
+          "value": "char_length(\"caw\".\"hops\".\"note\") <= 2000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "caw.notes": {
+      "name": "notes",
+      "schema": "caw",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "card_id": {
+          "name": "card_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "from_worker_id": {
+          "name": "from_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "to_worker_id": {
+          "name": "to_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "at": {
+          "name": "at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "notes_card_id_cards_id_fk": {
+          "name": "notes_card_id_cards_id_fk",
+          "tableFrom": "notes",
+          "columnsFrom": [
+            "card_id"
+          ],
+          "tableTo": "cards",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "notes_from_worker_id_workers_id_fk": {
+          "name": "notes_from_worker_id_workers_id_fk",
+          "tableFrom": "notes",
+          "columnsFrom": [
+            "from_worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "notes_to_worker_id_workers_id_fk": {
+          "name": "notes_to_worker_id_workers_id_fk",
+          "tableFrom": "notes",
+          "columnsFrom": [
+            "to_worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "notes_type": {
+          "name": "notes_type",
+          "value": "\"caw\".\"notes\".\"type\" in ('comment','handoff')"
+        },
+        "notes_text_length": {
+          "name": "notes_text_length",
+          "value": "char_length(\"caw\".\"notes\".\"text\") between 1 and 8000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "caw.projects": {
+      "name": "projects",
+      "schema": "caw",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blueprint_project_id": {
+          "name": "blueprint_project_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "latest_seen_version": {
+          "name": "latest_seen_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'manual'"
+        },
+        "hop_budget": {
+          "name": "hop_budget",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "hops_used": {
+          "name": "hops_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "workspace": {
+          "name": "workspace",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{\"roots\":[]}'::jsonb"
+        },
+        "entry_worker_id": {
+          "name": "entry_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "projects_entry_worker_id_workers_id_fk": {
+          "name": "projects_entry_worker_id_workers_id_fk",
+          "tableFrom": "projects",
+          "columnsFrom": [
+            "entry_worker_id"
+          ],
+          "tableTo": "workers",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "projects_blueprint_version": {
+          "name": "projects_blueprint_version",
+          "columns": [
+            "blueprint_project_id",
+            "version"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "projects_mode": {
+          "name": "projects_mode",
+          "value": "\"caw\".\"projects\".\"mode\" in ('manual','dispatcher')"
+        },
+        "projects_hop_budget": {
+          "name": "projects_hop_budget",
+          "value": "\"caw\".\"projects\".\"hop_budget\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "caw.runs": {
+      "name": "runs",
+      "schema": "caw",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hop_budget": {
+          "name": "hop_budget",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stop_reason": {
+          "name": "stop_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "report": {
+          "name": "report",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "runs_one_open_per_project": {
+          "name": "runs_one_open_per_project",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"caw\".\"runs\".\"ended_at\" is null",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "runs_project_id_projects_id_fk": {
+          "name": "runs_project_id_projects_id_fk",
+          "tableFrom": "runs",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "tableTo": "projects",
+          "schemaTo": "caw",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "runs_mode": {
+          "name": "runs_mode",
+          "value": "\"caw\".\"runs\".\"mode\" in ('manual','dispatcher')"
+        },
+        "runs_hop_budget": {
+          "name": "runs_hop_budget",
+          "value": "\"caw\".\"runs\".\"hop_budget\" >= 0"
+        },
+        "runs_stop_reason": {
+          "name": "runs_stop_reason",
+          "value": "\"caw\".\"runs\".\"stop_reason\" is null or \"caw\".\"runs\".\"stop_reason\" in ('budget_spent','nothing_workable','failed_review_twice','limit_reached','operator_stopped','error')"
+        },
+        "runs_report_length": {
+          "name": "runs_report_length",
+          "value": "\"caw\".\"runs\".\"report\" is null or char_length(\"caw\".\"runs\".\"report\") <= 20000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "caw.workers": {
+      "name": "workers",
+      "schema": "caw",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "skills": {
+          "name": "skills",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "effort": {
+          "name": "effort",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "combined_from": {
+          "name": "combined_from",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "workers_name_unique": {
+          "name": "workers_name_unique",
+          "columns": [
+            "name"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "workers_name_length": {
+          "name": "workers_name_length",
+          "value": "char_length(\"caw\".\"workers\".\"name\") between 1 and 40"
+        },
+        "workers_role": {
+          "name": "workers_role",
+          "value": "\"caw\".\"workers\".\"role\" in ('PM','SA','FE','BE','QA','other')"
+        },
+        "workers_skills_not_empty": {
+          "name": "workers_skills_not_empty",
+          "value": "cardinality(\"caw\".\"workers\".\"skills\") >= 1"
+        },
+        "workers_model": {
+          "name": "workers_model",
+          "value": "\"caw\".\"workers\".\"model\" in ('opus','sonnet','haiku')"
+        },
+        "workers_effort": {
+          "name": "workers_effort",
+          "value": "\"caw\".\"workers\".\"effort\" in ('low','medium','high')"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "caw": "caw"
+  },
+  "views": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

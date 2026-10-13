@@ -1,0 +1,38 @@
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { type Blueprint, createBlueprint } from "./blueprint/client";
+import type { Db } from "./db/client";
+import { createFollower, type Follower } from "./follow/pull";
+import { actorRule, type Env } from "./http/actor";
+import { onError, unknownRoute, validationHook } from "./http/errors";
+import { cardRoutes } from "./http/routes/cards";
+import { chainRoutes } from "./http/routes/chain";
+import { followRoutes } from "./http/routes/follow";
+import { hopRoutes } from "./http/routes/hops";
+import { projectRoutes } from "./http/routes/projects";
+import { workerRoutes } from "./http/routes/workers";
+
+const DOCUMENT = { openapi: "3.1.0", info: { title: "CAW API", version: "1.0.0" } };
+
+export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follower } = {}): OpenAPIHono<Env> {
+  const blueprint = deps.blueprint ?? createBlueprint(); // no call happens until a route needs one
+  const follow = deps.follow ?? createFollower(db, blueprint); // started by index.ts, not here
+  const app = new OpenAPIHono<Env>({ defaultHook: validationHook });
+  app.get("/health", (c) => c.json({ ok: true }));
+  app.use("/v1/*", actorRule(db));
+  projectRoutes(app, db, blueprint);
+  workerRoutes(app, db);
+  chainRoutes(app, db);
+  cardRoutes(app, db, blueprint);
+  hopRoutes(app, db);
+  followRoutes(app, follow);
+
+  // The document is generated from the route schemas above, and lists itself.
+  app.openapi(createRoute({
+    method: "get", path: "/v1/openapi.json",
+    responses: { 200: { description: "this API's OpenAPI 3.1 document", content: { "application/json": { schema: z.looseObject({ openapi: z.string() }) } } } },
+  }), (c) => c.json(app.getOpenAPI31Document(DOCUMENT), 200));
+
+  app.notFound(unknownRoute);
+  app.onError(onError);
+  return app;
+}
