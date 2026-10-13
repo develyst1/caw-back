@@ -80,14 +80,14 @@ test("GET /v1/projects (+ counts) and GET /v1/projects/{id} (+ 404)", async () =
   const nf = await call("GET", "/v1/projects/00000000-0000-0000-0000-000000000099");
   expect([nf.status, nf.json.error.code]).toEqual([404, "not_found"]);
 
-  // counts from the cards table: 4 cards — done · todo · stuck · an open question; a changed-spec card counts as stuck once
+  // counts from the cards table: 4 cards — done (its spec changed, but it is finished: not stuck) · todo · stuck + spec changed (once) · an open question
   const at = new Date();
   const row = (n: number, over: Partial<typeof cards.$inferInsert>): typeof cards.$inferInsert => ({
     id: `55555555-5555-4555-8555-55555555555${n}`, projectId: p.id, number: n, kind: "work", title: `c${n}`, todo: "", status: "todo",
     anchorKey: "STEP-001", anchorVersion: 1, createdAt: at, updatedAt: at, ...over,
   });
   await db.insert(cards).values([
-    row(1, { status: "done" }), row(2, {}), row(3, { status: "stuck", specChangedVersion: 2 }),
+    row(1, { status: "done", specChangedVersion: 2 }), row(2, {}), row(3, { status: "stuck", specChangedVersion: 2 }),
     row(4, { kind: "question", question: { text: "q", proposedDefault: "d", cases: ["a"] } }),
   ]);
   const [sum] = (await call("GET", "/v1/projects")).json.projects;

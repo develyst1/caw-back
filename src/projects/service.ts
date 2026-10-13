@@ -59,14 +59,14 @@ export async function getProject(db: Db, id: string): Promise<Project> {
   return project;
 }
 
-// stuck = status `stuck`, or an open question card, or a card whose spec changed under it — each card counted once
+// stuck = status `stuck`, or an open question card, or a card whose spec changed under it — never a finished (done) card; each card counted once
 export async function listProjects(db: Db): Promise<ProjectSummary[]> {
   const rows = await db.select({ id: projects.id }).from(projects).orderBy(desc(projects.createdAt), asc(projects.id)); // newest first, as Blueprint lists
   const counts = await db.select({
     projectId: cards.projectId,
     total: sql<number>`count(*)::int`,
     done: sql<number>`count(*) filter (where ${cards.status} = 'done')::int`,
-    stuck: sql<number>`count(*) filter (where ${cards.status} = 'stuck' or (${cards.kind} = 'question' and ${cards.status} <> 'done') or ${cards.specChangedVersion} is not null)::int`,
+    stuck: sql<number>`count(*) filter (where ${cards.status} = 'stuck' or (${cards.kind} = 'question' and ${cards.status} <> 'done') or (${cards.specChangedVersion} is not null and ${cards.status} <> 'done'))::int`,
   }).from(cards).groupBy(cards.projectId);
   const byProject = new Map(counts.map((c) => [c.projectId, c]));
   return Promise.all(rows.map(async ({ id }) => {

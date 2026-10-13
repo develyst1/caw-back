@@ -3,16 +3,14 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
-
-// Same resolution as src/db/client.ts.
-const migrationsFolder = new URL("../db/migrations", import.meta.url).pathname;
+import { MIGRATIONS } from "../db/migrations-config"; // the folder and CAW's own journal (caw.__caw_migrations), as src/db/client.ts
 
 const url = process.env.DATABASE_URL ?? "";
 let client: ReturnType<typeof postgres> | undefined;
 try {
   if (!url) throw Object.assign(new Error(), { code: "no DATABASE_URL" });
   client = postgres(url, { max: 1, onnotice: () => {} });
-  await migrate(drizzle({ client }), { migrationsFolder });
+  await migrate(drizzle({ client }), MIGRATIONS);
   console.log("migrations applied");
 } catch (err) {
   // drizzle wraps the Postgres error: its code is on `cause`.

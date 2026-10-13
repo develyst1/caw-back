@@ -169,11 +169,14 @@ test("over real stdio: `bun run src/mcp/server.ts` with CAW_API_URL + CAW_WORKER
 test("CAW_WORKER_ID is required: without it the server refuses to start — one line, exit 1", async () => {
   const env = { ...(process.env as Record<string, string>) };
   delete env.CAW_WORKER_ID;
-  for (const value of [undefined, ""]) {
+  const run = async (value: string | undefined) => {
     const proc = Bun.spawn([process.execPath, "run", "src/mcp/server.ts"], { cwd: new URL("../..", import.meta.url).pathname, env: { ...env, ...(value === undefined ? {} : { CAW_WORKER_ID: value }) }, stdout: "pipe", stderr: "pipe" });
     const code = await proc.exited;
     const err = (await new Response(proc.stderr).text()).trim().split("\n").filter((l) => !l.startsWith("error: script"));
-    expect([value, code, err.length]).toEqual([value, 1, 1]);
-    expect(err[0]).toContain("CAW_WORKER_ID");
+    return { value, code, lines: err.length, first: err[0] };
+  };
+  for (const r of await Promise.all([run(undefined), run("")])) { // both at once: two process starts, not two in a row
+    expect([r.value, r.code, r.lines]).toEqual([r.value, 1, 1]);
+    expect(r.first).toContain("CAW_WORKER_ID");
   }
 });
