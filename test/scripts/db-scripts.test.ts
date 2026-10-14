@@ -15,8 +15,11 @@ import { fixJournal } from "../../src/scripts/db-fix-journal";
 import { inspect, render, type Client } from "../../src/scripts/db-inspect";
 
 const MIG = new URL("../../src/db/migrations/", import.meta.url);
-const CAW_ROWS = (JSON.parse(readFileSync(new URL("meta/_journal.json", MIG), "utf8")) as { entries: { tag: string; when: number }[] }).entries
-  .map((e) => ({ created_at: e.when, hash: createHash("sha256").update(readFileSync(new URL(`${e.tag}.sql`, MIG), "utf8")).digest("hex") }));
+// The study's two rows are the FIRST two migrations (0000, 0001); later ones (0002 …) come after the incident.
+const CAW_ALL = (JSON.parse(readFileSync(new URL("meta/_journal.json", MIG), "utf8")) as { entries: { tag: string; when: number }[] }).entries;
+const CAW_ROWS = CAW_ALL
+  .slice(0, 2).map((e) => ({ created_at: e.when, hash: createHash("sha256").update(readFileSync(new URL(`${e.tag}.sql`, MIG), "utf8")).digest("hex") }));
+const JOURNAL_ENTRIES = CAW_ALL.length;
 const closers: (() => Promise<void> | void)[] = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
 
@@ -83,7 +86,7 @@ test("db:inspect writes nothing: one READ ONLY transaction, rolled back, no writ
   await w.pg.exec("ROLLBACK");
 });
 
-test("db:fix-journal on Case A: moves the 2 rows, leaves Blueprint's 6, and then the migrator applies nothing and succeeds", async () => {
+test("db:fix-journal on Case A: moves the 2 rows, leaves Blueprint's 6, and then the migrator applies only what is newer (0002, 0003 …) and succeeds", async () => {
   const w = await caseA();
   // before the fix the migrator tries to create the tables again — the 42P07 on SIT
   const failing = await migrate(drizzle({ client: w.pg }), MIGRATIONS).then(() => null, (e: any) => `${e?.message} ${e?.cause?.message ?? ""} ${e?.cause?.code ?? ""}`);
@@ -95,8 +98,10 @@ test("db:fix-journal on Case A: moves the 2 rows, leaves Blueprint's 6, and then
   expect((await w.run(`select hash from caw.__caw_migrations order by created_at`)).map((r) => r.hash)).toEqual(CAW_ROWS.map((r) => r.hash));
   expect((await w.run(`select hash from drizzle.__drizzle_migrations order by created_at`)).map((r) => r.hash.slice(0, 2))).toEqual(["bp", "bp", "bp", "bp", "bp", "bp"]);
 
-  await migrate(drizzle({ client: w.pg }), MIGRATIONS); // `db:migrate`'s migrator: nothing left to apply
-  expect(await count(w.run, "caw.__caw_migrations")).toBe(2);
+  await migrate(drizzle({ client: w.pg }), MIGRATIONS); // `db:migrate`'s migrator: 0000 and 0001 are in the journal now — only the newer ones are pending
+  expect(await count(w.run, "caw.__caw_migrations")).toBe(JOURNAL_ENTRIES);
+  await migrate(drizzle({ client: w.pg }), MIGRATIONS); // and a second run applies nothing
+  expect(await count(w.run, "caw.__caw_migrations")).toBe(JOURNAL_ENTRIES);
   expect(await count(w.run, "drizzle.__drizzle_migrations")).toBe(6);
   expect((await inspect(w.client)).verdict).toBe("MIGRATED");
   // a second fix refuses: there is nothing to fix any more

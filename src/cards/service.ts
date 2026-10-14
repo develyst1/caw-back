@@ -28,6 +28,17 @@ async function findCard(db: Db, cardId: string): Promise<{ projectId: string; st
 }
 const cardIn = (s: State, cardId: string) => need(s.cards.find((c) => c.id === cardId), "card");
 
+/** v1.5 (D-054): a `worker:<id>` writes on a card only from a RUNNING hop of its own on that card (`X-CAW-Hop`). operator / runner: no hop. */
+function guardHop(s: State, actor: Actor, hopId: string | null, card: CardState): void {
+  const wid = workerIdOf(actor);
+  if (wid === null) return;
+  if (hopId === null) throw new ApiError(400, "hop_required", "a worker writes only from a running hop: send X-CAW-Hop with the id of your hop on this card");
+  const hop = s.hops.find((h) => h.id === hopId);
+  if (!hop || hop.workerId !== wid || hop.cardId !== card.id || hop.endedAt !== null) {
+    throw new ApiError(409, "hop_not_running", "that hop is not a running hop of yours on this card", { hopId, endedAt: hop?.endedAt ?? null, outcome: hop?.outcome ?? null });
+  }
+}
+
 /** The operator may act on any card; a worker only on a card assigned to it (SPEC § Identity). */
 function mayAct(actor: Actor, card: CardState): void {
   const wid = workerIdOf(actor);
@@ -99,10 +110,11 @@ async function onCard(db: Db, cardId: string, decide: (s: State, card: CardState
   return { state, card: cardIn(state, cardId) };
 }
 
-export async function addComment(db: Db, actor: Actor, cardId: string, text: string): Promise<Note> {
+export async function addComment(db: Db, actor: Actor, hopId: string | null, cardId: string, text: string): Promise<Note> {
   await findCard(db, cardId); // 404 before 403
   const noteId = newId();
   const { state } = await onCard(db, cardId, (s, card) => {
+    guardHop(s, actor, hopId, card);
     mayAct(actor, card);
     return { type: "card.commented", projectId: card.projectId, actor, at: now(), data: { cardId, noteId, text } };
   });
@@ -110,21 +122,48 @@ export async function addComment(db: Db, actor: Actor, cardId: string, text: str
 }
 
 // A hand-off follows an edge of the project's chain: from the card's current assignee to a worker it may hand to.
-export async function handOff(db: Db, actor: Actor, cardId: string, toWorkerId: string, text: string): Promise<Card> {
-  await findCard(db, cardId);
+export async function handOff(db: Db, actor: Actor, hopId: string | null, cardId: string, toWorkerId: string, text: string): Promise<Card> {
+  const { projectId } = await findCard(db, cardId);
   const noteId = newId();
-  const { state, card } = await onCard(db, cardId, (s, c) => {
-    mayAct(actor, c);
-    const allowed = s.edges.filter((e) => e.from === c.assigneeId).map((e) => e.to);
-    if (!allowed.includes(toWorkerId)) throw new ApiError(409, "chain_broken", "the chain has no hand-off from the card's worker to that worker", { from: c.assigneeId, allowed });
-    return { type: "card.handed_off", projectId: c.projectId, actor, at: now(), data: { cardId, fromWorkerId: c.assigneeId, toWorkerId, noteId, text } };
-  });
-  return cardView(state, card);
+  try {
+    const { state, card } = await onCard(db, cardId, (s, c) => {
+      guardHop(s, actor, hopId, c); // before the refusal record: a hand-off from a hop that is not running is not recorded
+      mayAct(actor, c);
+      const allowed = s.edges.filter((e) => e.from === c.assigneeId).map((e) => e.to);
+      if (!allowed.includes(toWorkerId)) throw new ApiError(409, "chain_broken", "the chain has no hand-off from the card's worker to that worker", { from: c.assigneeId, allowed });
+      return { type: "card.handed_off", projectId: c.projectId, actor, at: now(), data: { cardId, fromWorkerId: c.assigneeId, toWorkerId, noteId, text } };
+    });
+    return cardView(state, card);
+  } catch (e) {
+    // v1.3 (D-051): a hand-off refused `chain_broken` is recorded — one event, its own transaction — and the 409 is answered unchanged.
+    // Only this refusal: not_your_card, a 400 and a 404 write nothing.
+    if (e instanceof ApiError && e.code === "chain_broken") await recordRefusedHandOff(db, projectId, actor, { cardId, noteId, toWorkerId, text, details: e.details as { from: string | null; allowed: string[] } });
+    throw e; // the caller always gets the 409
+  }
 }
 
-export async function setStatus(db: Db, actor: Actor, cardId: string, status: CardStatus): Promise<Card> {
+// The note names who the card was to go to, so `to` must be a worker CAW knows (notes.to_worker_id is a foreign key): a hand-off to
+// an id that is no worker is refused as before and leaves no note. A failure to record never replaces the 409 — it is logged
+// (name and code only) and the 409 goes out.
+async function recordRefusedHandOff(db: Db, projectId: string, actor: Actor,
+  r: { cardId: string; noteId: string; toWorkerId: string; text: string; details: { from: string | null; allowed: string[] } }): Promise<void> {
+  const unknown = Symbol("unknown worker");
+  try {
+    await writeDecided(db, projectId, (s) => {
+      if (!s.workers.some((w) => w.id === r.toWorkerId)) throw unknown;
+      return { type: "card.handoff_refused", projectId, actor, at: now(), data: { cardId: r.cardId, noteId: r.noteId, from: r.details.from, to: r.toWorkerId, allowed: r.details.allowed, text: r.text } };
+    });
+  } catch (e) {
+    if (e === unknown) return;
+    const code = (e as { cause?: { code?: string } }).cause?.code;
+    console.error(`[handoff] refusal not recorded ${(e as Error).name}${code ? ` code=${code}` : ""}`);
+  }
+}
+
+export async function setStatus(db: Db, actor: Actor, hopId: string | null, cardId: string, status: CardStatus): Promise<Card> {
   await findCard(db, cardId);
   const { state, card } = await onCard(db, cardId, (s, c) => {
+    guardHop(s, actor, hopId, c);
     mayAct(actor, c);
     if (c.kind === "question") throw new ApiError(400, "validation", "a question card is answered (POST …/answer), not moved");
     if (status === "doing" && depsOf(s, c.id).some((d) => d.status !== "done")) {
@@ -148,10 +187,11 @@ export async function assign(db: Db, actor: Actor, cardId: string, workerId: str
 }
 
 // A question card (assignee null = the operator) is made in the same event as the dependency asking-card → question-card.
-export async function askQuestion(db: Db, actor: Actor, cardId: string, q: { text: string; proposedDefault: string; cases: string[] }): Promise<Card> {
+export async function askQuestion(db: Db, actor: Actor, hopId: string | null, cardId: string, q: { text: string; proposedDefault: string; cases: string[] }): Promise<Card> {
   await findCard(db, cardId);
   const id = newId();
   const { state } = await onCard(db, cardId, (s, c) => {
+    guardHop(s, actor, hopId, c);
     mayAct(actor, c);
     if (c.kind === "question") throw new ApiError(400, "validation", "a question card cannot ask a question");
     return { type: "card.question_opened", projectId: c.projectId, actor, at: now(), data: {

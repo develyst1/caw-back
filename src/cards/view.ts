@@ -9,7 +9,10 @@ export type Card = {
   question: { text: string; proposedDefault: string; cases: string[] } | null; answer: string | null; workable: boolean;
   createdAt: string; updatedAt: string;
 };
-export type Note = { id: string; type: "comment" | "handoff"; actor: string; text: string; fromWorkerId: string | null; toWorkerId: string | null; at: string };
+export type Note = {
+  id: string; type: "comment" | "handoff" | "handoff_refused"; actor: string; text: string; fromWorkerId: string | null; toWorkerId: string | null;
+  allowed: string[] | null; at: string;
+};
 
 export const depsOf = (s: State, cardId: string): CardState[] => {
   const ids = new Set(s.deps.filter((d) => d.cardId === cardId).map((d) => d.dependsOnId));
@@ -26,4 +29,4 @@ export const cardView = (s: State, c: CardState): Card => ({
 });
 
 export const noteView = (n: NoteState): Note =>
-  ({ id: n.id, type: n.type, actor: n.actor, text: n.text, fromWorkerId: n.fromWorkerId, toWorkerId: n.toWorkerId, at: n.at });
+  ({ id: n.id, type: n.type, actor: n.actor, text: n.text, fromWorkerId: n.fromWorkerId, toWorkerId: n.toWorkerId, allowed: n.allowed, at: n.at });

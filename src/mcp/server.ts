@@ -2,7 +2,8 @@
 // API — every tool is one API call carrying `X-CAW-Actor: worker:<CAW_WORKER_ID>`, so the API's rules (own cards only, chain
 // edges, question cards …) apply unchanged and live in one place. The results are the API's JSON; an API error comes back as
 // a tool error whose text is the API's own error body, so the model sees the code (`not_your_card`, `chain_broken` …).
-//   env: CAW_API_URL (default http://127.0.0.1:4500) · CAW_WORKER_ID (required — refuses to start without it)
+//   env: CAW_API_URL (default http://127.0.0.1:4500) · CAW_WORKER_ID (required — refuses to start without it) ·
+//        CAW_HOP_ID (the worker's running hop, set by the runner per hop; without it every write tool answers hop_required)
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -11,9 +12,10 @@ type Result = { content: { type: "text"; text: string }[]; isError?: true };
 const ok = (json: unknown): Result => ({ content: [{ type: "text", text: JSON.stringify(json) }] });
 const fail = (error: { code: string; message: string; details?: unknown }): Result => ({ isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] });
 
-export type McpOptions = { apiUrl: string; workerId: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
+// hopId = the worker's running hop (v1.5, D-054): sent as X-CAW-Hop on every call; without it every write answers hop_required
+export type McpOptions = { apiUrl: string; workerId: string; hopId?: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
 
-export function createMcpServer({ apiUrl, workerId, fetch: fetchImpl = (input, init) => fetch(input, init) }: McpOptions): McpServer {
+export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (input, init) => fetch(input, init) }: McpOptions): McpServer {
   const actor = `worker:${workerId}`;
 
   // one HTTP call: the parsed JSON on success, or the error to hand back as a tool error
@@ -22,7 +24,7 @@ export function createMcpServer({ apiUrl, workerId, fetch: fetchImpl = (input, i
     try {
       res = await fetchImpl(`${apiUrl}${path}`, {
         method,
-        headers: { "x-caw-actor": actor, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        headers: { "x-caw-actor": actor, ...(hopId ? { "x-caw-hop": hopId } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch {
@@ -100,6 +102,50 @@ export function createMcpServer({ apiUrl, workerId, fetch: fetchImpl = (input, i
     },
   }, ({ cardId, text, proposedDefault, cases }) => run("POST", `/v1/cards/${id(cardId)}/question`, { text, proposedDefault, cases }));
 
+  // ---------- chat (v1.4, REQ-013): the entry worker's chat hop ----------
+  const Questions = z.array(z.object({ text: z.string().min(1), proposedDefault: z.string().min(1), cases: z.array(z.string().min(1)).min(1).max(10) })).max(10);
+  const Item = z.object({
+    title: z.string().min(1).describe("the card's title (1–200 characters)"), todo: z.string().describe("what to do"),
+    anchor: z.object({ key: z.string().min(1), version: z.number().int().min(1) }).describe("a part `locate` found, and the confirmed version it is in"),
+    workerId: z.string().min(1).describe("the chain member who gets the card"),
+    dependsOn: z.array(z.number().int().min(0)).default([]).describe("indexes of the items in this list that must be done first"),
+    hops: z.number().int().min(1).describe("your estimate of the hops this card needs"),
+  });
+
+  server.registerTool("chat_context", {
+    title: "Chat context",
+    description: "Everything you need to answer the operator's chat message: the message, the chat so far, the project and its chain (who is in it, who may hand to whom). Only while your chat hop on that message is running.",
+    inputSchema: { messageId: z.string().min(1) },
+  }, ({ messageId }) => run("GET", `/v1/chat/${id(messageId)}/context`));
+
+  server.registerTool("locate", {
+    title: "Find parts of the spec",
+    description: "Ask Blueprint which parts of the confirmed spec a request touches. Returns Blueprint's answer: candidate parts (key, kind, title, score). You may propose cards only on keys you located in this hop.",
+    inputSchema: { projectId: z.string().min(1), request: z.string().min(1).describe("1–1 000 characters") },
+  }, ({ projectId, request }) => run("POST", `/v1/projects/${id(projectId)}/locate`, { request }));
+
+  server.registerTool("propose_cards", {
+    title: "Propose cards",
+    description: "Propose cards for the operator's message — 1 to 50 items, each anchored on a part you located. The operator accepts them; nothing is made until then. A new proposal replaces your earlier open one on the same message. Pass the returned id as `proposalId` to `reply`.",
+    inputSchema: { projectId: z.string().min(1), messageId: z.string().min(1), items: z.array(Item).min(1).max(50) },
+  }, ({ projectId, messageId, items }) => run("POST", `/v1/projects/${id(projectId)}/proposals`, { messageId, items }));
+
+  server.registerTool("send_amendment", {
+    title: "Send a spec change request to Blueprint",
+    description: "Ask Blueprint's chat to change the spec (the spec is not touched: a question pack comes of it). `about` = keys of the parts it concerns. Returns Blueprint's message; pass its id as `amendment.blueprintMessageId` to `reply`.",
+    inputSchema: { projectId: z.string().min(1), request: z.string().min(1).describe("1–4 000 characters"), about: z.array(z.string().min(1)).max(20).optional() },
+  }, ({ projectId, request, about }) => run("POST", `/v1/projects/${id(projectId)}/amendments`, { request, ...(about ? { about } : {}) }));
+
+  server.registerTool("reply", {
+    title: "Reply in the chat",
+    description: "Answer the operator's message (once). Optionally with questions for the operator, the proposal you made (`proposalId`) and the amendment you sent (`amendment.blueprintMessageId`).",
+    inputSchema: {
+      messageId: z.string().min(1), text: z.string().min(1).describe("1–4 000 characters"), questions: Questions.optional(),
+      proposalId: z.string().min(1).optional(), amendment: z.object({ blueprintMessageId: z.string().min(1) }).optional(),
+    },
+  }, ({ messageId, text, questions, proposalId, amendment }) =>
+    run("POST", `/v1/chat/${id(messageId)}/reply`, { text, ...(questions ? { questions } : {}), ...(proposalId ? { proposalId } : {}), ...(amendment ? { amendment } : {}) }));
+
   return server;
 }
 
@@ -109,6 +155,6 @@ if (import.meta.main) {
     console.error("CAW_WORKER_ID is required: the id of the CAW worker this MCP server acts as");
     process.exit(1);
   }
-  const server = createMcpServer({ apiUrl: process.env.CAW_API_URL || "http://127.0.0.1:4500", workerId });
+  const server = createMcpServer({ apiUrl: process.env.CAW_API_URL || "http://127.0.0.1:4500", workerId, hopId: process.env.CAW_HOP_ID || undefined });
   await server.connect(new StdioServerTransport());
 }

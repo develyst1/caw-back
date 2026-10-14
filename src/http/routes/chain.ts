@@ -10,7 +10,7 @@ const Id = z.object({ id: z.string() });
 const Edge = z.object({ from: z.string().min(1), to: z.string().min(1) });
 const WorkerRef = z.object({ workerId: z.string().min(1) });
 
-const ChainSchema = z.object({
+export const ChainSchema = z.object({
   members: z.array(WorkerSchema), edges: z.array(Edge), entryWorkerId: z.string().nullable(),
 }).openapi("Chain");
 const chain = (description: string) => json(ChainSchema, description);

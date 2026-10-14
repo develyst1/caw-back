@@ -20,8 +20,9 @@ export const CardSchema = z.object({
   workable: z.boolean(), createdAt: z.string(), updatedAt: z.string(),
 }).openapi("Card");
 const NoteSchema = z.object({
-  id: z.string(), type: z.enum(["comment", "handoff"]), actor: z.string(), text: z.string(),
-  fromWorkerId: z.string().nullable(), toWorkerId: z.string().nullable(), at: z.string(),
+  id: z.string(), type: z.enum(["comment", "handoff", "handoff_refused"]), actor: z.string(), text: z.string(),
+  fromWorkerId: z.string().nullable(), toWorkerId: z.string().nullable(),
+  allowed: z.array(z.string()).nullable().openapi({ description: "handoff_refused only: who the sender could have handed the card to" }), at: z.string(),
 }).openapi("Note");
 const CardContextSchema = z.object({
   card: CardSchema, spec: z.unknown().openapi({ description: "Blueprint's PartContext, exactly as its seam returned it" }), notes: z.array(NoteSchema),
@@ -67,7 +68,7 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
   app.openapi(createRoute({
     method: "post", path: "/v1/cards/{cardId}/comments", request: { params: CardId, body: body(z.object({ text: Text }), "a comment") },
     responses: { 201: json(NoteSchema, "the note"), 400: errors[400], 403: errors[403], 404: errors[404] },
-  }), async (c) => c.json(await addComment(db, c.get("actor"), c.req.valid("param").cardId, c.req.valid("json").text), 201));
+  }), async (c) => c.json(await addComment(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, c.req.valid("json").text), 201));
 
   app.openapi(createRoute({
     method: "post", path: "/v1/cards/{cardId}/handoff",
@@ -75,13 +76,13 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
     responses: { 200: card("the card, now the next worker's"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
   }), async (c) => {
     const b = c.req.valid("json");
-    return c.json(await handOff(db, c.get("actor"), c.req.valid("param").cardId, b.toWorkerId, b.text), 200);
+    return c.json(await handOff(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, b.toWorkerId, b.text), 200);
   });
 
   app.openapi(createRoute({
     method: "patch", path: "/v1/cards/{cardId}/status", request: { params: CardId, body: body(z.object({ status: Status }), "the new status") },
     responses: { 200: card("the card"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
-  }), async (c) => c.json(await setStatus(db, c.get("actor"), c.req.valid("param").cardId, c.req.valid("json").status), 200));
+  }), async (c) => c.json(await setStatus(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, c.req.valid("json").status), 200));
 
   app.openapi(createRoute({
     method: "patch", path: "/v1/cards/{cardId}/assignee", request: { params: CardId, body: body(z.object({ workerId: z.string().min(1) }), "the operator re-assigns") },
@@ -94,7 +95,7 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
       text: z.string().min(1).max(2000), proposedDefault: z.string().min(1).max(2000), cases: z.array(z.string().min(1).max(500)).min(1).max(10),
     }), "a question for the operator, with a proposed default") },
     responses: { 201: card("the new question card"), 400: errors[400], 403: errors[403], 404: errors[404] },
-  }), async (c) => c.json(await askQuestion(db, c.get("actor"), c.req.valid("param").cardId, c.req.valid("json")), 201));
+  }), async (c) => c.json(await askQuestion(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, c.req.valid("json")), 201));
 
   app.openapi(createRoute({
     method: "post", path: "/v1/cards/{cardId}/answer", request: { params: CardId, body: body(z.object({ answer: Text }), "the operator's answer") },

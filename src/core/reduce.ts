@@ -1,7 +1,7 @@
 // The one reducer: (state, event) → state. Pure — no I/O, no clock, no ids of its own (they are in the event).
 // The write path applies it to the tables; a rebuild runs it over the stored events from `empty`. Same function, so the
 // tables and a rebuild cannot disagree except by someone writing the tables behind the events' back (AC-6).
-import type { CardStatus, CawEvent, HopOutcome, Mode, StopReason } from "./events";
+import type { CardStatus, CawEvent, ChatQuestion, HopOutcome, Mode, ProposalItem, StopReason } from "./events";
 
 export type ProjectState = {
   id: string; name: string; blueprintProjectId: string; version: number; latestSeenVersion: number;
@@ -17,11 +17,20 @@ export type CardState = {
   question: { text: string; proposedDefault: string; cases: string[] } | null; answer: string | null; createdAt: string; updatedAt: string;
 };
 export type NoteState = {
-  id: string; cardId: string; type: "comment" | "handoff"; actor: string; text: string;
-  fromWorkerId: string | null; toWorkerId: string | null; at: string;
+  id: string; cardId: string; type: "comment" | "handoff" | "handoff_refused"; actor: string; text: string;
+  fromWorkerId: string | null; toWorkerId: string | null; allowed: string[] | null; at: string;
+};
+export type ChatMessageState = {
+  id: string; projectId: string; author: string; text: string; replyTo: string | null; replyHopId: string | null;
+  questions: ChatQuestion[] | null; proposalId: string | null; amendment: { blueprintMessageId: string; link: string } | null; at: string;
+  retryRequestedAt: string | null; // v1.9: set by chat.retry_requested, cleared by the next hop.started on the message
+};
+export type ProposalState = {
+  id: string; projectId: string; messageId: string; version: number; items: ProposalItem[]; status: "open" | "accepted" | "superseded";
+  cardIds: string[] | null; createdAt: string;
 };
 export type HopState = {
-  id: string; projectId: string; runId: string | null; claimedBy: string | null; cardId: string; workerId: string;
+  id: string; projectId: string; runId: string | null; claimedBy: string | null; cardId: string | null; messageId: string | null; locatedKeys: string[] | null; workerId: string;
   startedAt: string; endedAt: string | null; outcome: HopOutcome | null; tokensIn: number | null; tokensOut: number | null; note: string;
 };
 export type RunState = {
@@ -38,9 +47,11 @@ export type State = {
   notes: NoteState[];
   hops: HopState[];
   runs: RunState[];
+  chat: ChatMessageState[];
+  proposals: ProposalState[];
 };
 
-export const empty: State = { project: null, workers: [], members: [], edges: [], cards: [], deps: [], notes: [], hops: [], runs: [] };
+export const empty: State = { project: null, workers: [], members: [], edges: [], cards: [], deps: [], notes: [], hops: [], runs: [], chat: [], proposals: [] };
 
 /** Sorted arrays, so two States that mean the same thing compare equal as JSON. */
 export function canonical(s: State): State {
@@ -55,6 +66,8 @@ export function canonical(s: State): State {
     notes: by(s.notes, (n) => n.id), // ids are time-ordered (core/ids.ts): id order is creation order
     hops: by(s.hops, (h) => h.id),
     runs: by(s.runs, (r) => r.id),
+    chat: by(s.chat, (m) => m.id),
+    proposals: by(s.proposals, (p) => p.id),
   };
 }
 
@@ -109,13 +122,18 @@ export function reduce(state: State, event: CawEvent): State {
       return { ...state, cards: touch(state.cards, event.data.cardId, event.at, { assigneeId: event.data.workerId }) };
     case "card.handed_off": {
       const d = event.data;
-      const note: NoteState = { id: d.noteId, cardId: d.cardId, type: "handoff", actor: event.actor, text: d.text, fromWorkerId: d.fromWorkerId, toWorkerId: d.toWorkerId, at: event.at };
+      const note: NoteState = { id: d.noteId, cardId: d.cardId, type: "handoff", actor: event.actor, text: d.text, fromWorkerId: d.fromWorkerId, toWorkerId: d.toWorkerId, allowed: null, at: event.at };
       return { ...state, cards: touch(state.cards, d.cardId, event.at, { assigneeId: d.toWorkerId }), notes: [...state.notes, note] };
     }
     case "card.commented": {
       const d = event.data;
-      const note: NoteState = { id: d.noteId, cardId: d.cardId, type: "comment", actor: event.actor, text: d.text, fromWorkerId: null, toWorkerId: null, at: event.at };
+      const note: NoteState = { id: d.noteId, cardId: d.cardId, type: "comment", actor: event.actor, text: d.text, fromWorkerId: null, toWorkerId: null, allowed: null, at: event.at };
       return { ...state, notes: [...state.notes, note] };
+    }
+    case "card.handoff_refused": {
+      const d = event.data;
+      const note: NoteState = { id: d.noteId, cardId: d.cardId, type: "handoff_refused", actor: event.actor, text: d.text, fromWorkerId: d.from, toWorkerId: d.to, allowed: [...d.allowed], at: event.at };
+      return { ...state, notes: [...state.notes, note] }; // the card keeps its assignee and status
     }
     case "card.question_opened": {
       const d = event.data;
@@ -155,11 +173,34 @@ export function reduce(state: State, event: CawEvent): State {
     case "hop.started": {
       const d = event.data;
       const hop: HopState = {
-        id: d.id, projectId: event.projectId!, runId: d.runId, claimedBy: d.claim, cardId: d.cardId, workerId: d.workerId,
+        id: d.id, projectId: event.projectId!, runId: d.runId, claimedBy: d.claim, cardId: d.cardId, messageId: d.messageId, locatedKeys: null, workerId: d.workerId,
         startedAt: event.at, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "",
       };
-      return { ...state, hops: [...state.hops, hop] };
+      // the runner has picked a retry up: the next hop on the message clears the request (v1.9)
+      const chat = d.messageId === null ? state.chat : state.chat.map((m) => (m.id === d.messageId && m.retryRequestedAt !== null ? { ...m, retryRequestedAt: null } : m));
+      return { ...state, hops: [...state.hops, hop], chat };
     }
+    // the keys a chat hop located — never the spec text (REQ-010 R1); each locate adds, order kept, no repeats (v1.6)
+    case "hop.located":
+      return { ...state, hops: state.hops.map((h) => (h.id === event.data.hopId ? { ...h, locatedKeys: [...new Set([...(h.locatedKeys ?? []), ...event.data.keys])] } : h)) };
+    case "chat.posted": {
+      const m: ChatMessageState = { id: event.data.id, projectId: event.projectId!, author: event.actor, text: event.data.text, replyTo: null, replyHopId: null, questions: null, proposalId: null, amendment: null, at: event.at, retryRequestedAt: null };
+      return { ...state, chat: [...state.chat, m] };
+    }
+    case "chat.replied": {
+      const d = event.data;
+      const m: ChatMessageState = { id: d.id, projectId: event.projectId!, author: event.actor, text: d.text, replyTo: d.messageId, replyHopId: null, questions: d.questions, proposalId: d.proposalId, amendment: d.amendment, at: event.at, retryRequestedAt: null };
+      return { ...state, chat: [...state.chat.map((x) => (x.id === d.messageId ? { ...x, replyHopId: d.hopId } : x)), m] };
+    }
+    case "chat.retry_requested":
+      return { ...state, chat: state.chat.map((m) => (m.id === event.data.messageId ? { ...m, retryRequestedAt: event.at } : m)) };
+    case "proposal.made": {
+      const d = event.data;
+      const p: ProposalState = { id: d.id, projectId: event.projectId!, messageId: d.messageId, version: d.version, items: d.items, status: "open", cardIds: null, createdAt: event.at };
+      return { ...state, proposals: [...state.proposals.map((x) => (d.supersedes.includes(x.id) ? { ...x, status: "superseded" as const } : x)), p] };
+    }
+    case "proposal.accepted":
+      return { ...state, proposals: state.proposals.map((p) => (p.id === event.data.proposalId ? { ...p, status: "accepted" as const, cardIds: [...event.data.cardIds] } : p)) };
     case "hop.claimed":
       return { ...state, hops: state.hops.map((h) => (h.id === event.data.hopId ? { ...h, claimedBy: event.data.claim } : h)) };
     case "hop.finished": {
@@ -167,8 +208,10 @@ export function reduce(state: State, event: CawEvent): State {
       return {
         ...state,
         hops: state.hops.map((h) => (h.id === d.hopId ? { ...h, endedAt: event.at, outcome: d.outcome, tokensIn: d.tokensIn, tokensOut: d.tokensOut, note: d.note } : h)),
-        // every finished hop counts, an interrupted one too (it started and may have done work — C-Q1)
-        project: state.project && { ...state.project, hopsUsed: state.project.hopsUsed + 1 },
+        // every finished CARD hop counts, an interrupted one too (it started and may have done work — C-Q1); a chat hop never does (v1.8)
+        project: state.project && state.hops.find((h) => h.id === d.hopId)?.messageId === null
+          ? { ...state.project, hopsUsed: state.project.hopsUsed + 1 }
+          : state.project,
       };
     }
   }

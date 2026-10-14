@@ -15,6 +15,27 @@
       "when": 1791880569138,
       "tag": "0001_db_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791919678587,
+      "tag": "0002_notes_handoff_refused",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791920409088,
+      "tag": "0003_chat_proposals_chat_hops",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791959035343,
+      "tag": "0004_chat_retry",
+      "breakpoints": true
     }
   ]
 }

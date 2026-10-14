@@ -1,0 +1,333 @@
+// Run ONE hop: one turn of one worker on one card, as a headless `claude -p` child (SPEC-C-003 § 2–3).
+// The hop row already exists (started by the screen or by the runner's restart rule); this finishes it, whatever happens.
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { Api, ApiEvent, Card, Finish, Hop, HopOutcome, Project, Worker } from "./api";
+import type { RunnerConfig } from "./config";
+import { type Thread, buildChatPrompt, buildPrompt, loadSkills, threadOf, writeSkillsFile } from "./prompt";
+import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
+import { redact } from "./redact";
+import { type Limit, StreamState } from "./stream";
+import { formatReset } from "./thai";
+import { toolSummary, writeTrace } from "./trace";
+
+/** REQ-012 wording table (decided 2026-10-14). A hop is a "ก้าว", a run a "รอบ". */
+export const NOTES = {
+  noRoots: "ยังไม่ได้กำหนดโฟลเดอร์ — ทีมจะยังเริ่มทำงานไม่ได้",
+  skillMissing: (name: string) => `ไม่พบสกิล ${name}`,
+  timeout: "หมดเวลา — ก้าวนี้ใช้เวลานานเกินไป",
+  noResult: "ก้าวนี้ไม่ได้ทิ้งผลงานไว้",
+  blocked: (worker: string, action: string) => `หยุดไว้: ${worker} พยายาม ${action} ซึ่งไม่อนุญาต`,
+  interrupted: "ถูกขัดจังหวะเพราะตัวรันเริ่มใหม่",
+  fault: (message: string) => `ตัวรันขัดข้อง: ${message}`,
+  /** REQ-012: ถึงลิมิตการใช้งาน Claude — จะทำต่อได้หลัง {เวลา}; without a reset time only the part that needs none */
+  limit: (resetsAt: number | null, now: Date) => `ถึงลิมิตการใช้งาน Claude${resetsAt === null ? "" : ` — จะทำต่อได้หลัง ${formatReset(resetsAt, now)}`}`,
+} as const;
+
+/** `pid` is the child's process id; with the real spawner it is also its process group id (the child leads its own group). */
+export type Child = { pid?: number; stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(signal?: string): void; stderrText(): Promise<string> };
+export type Spawner = (cmd: string[], opts: { cwd: string; env: Record<string, string | undefined> }) => Child;
+
+export type HopDeps = {
+  api: Api; config: RunnerConfig; spawn: Spawner;
+  /** the generated worker settings (settings.ts), written once per runner start */
+  settingsFile: string;
+  /** a per-runner temp folder (outside any repo); one sub-folder per hop, removed when the hop ends */
+  tmpRoot: string;
+  log: (line: string) => void;
+  /** true once the runner has been told to stop: a child that dies with it is NOT the hop's result, so the hop is left running
+   *  in the store and the next runner marks it `interrupted` (SPEC-C-003 § 1.1, AC-4) */
+  stopping?: () => boolean;
+  /** this runner's instance id, written into each hop file */
+  instance?: string;
+  /** where the per-hop files go (default `<os.tmpdir()>/caw-runner/hops`) and how processes are looked at / signalled (default: the real ones) */
+  hopsDir?: string;
+  procs?: Procs;
+  /** the clock, for the reset time in the limit note (default: the real one) */
+  now?: () => Date;
+  /** how long a child gets after SIGTERM before it is sent SIGKILL (default 5000 ms) */
+  killGraceMs?: number;
+  /** where each hop's stream is kept as `<hopId>.jsonl` (trace.ts); unset = no trace (tests) */
+  traceDir?: string;
+  /** per project: the last event seq seen, so "where am I now" is not a walk from 0 every hop */
+  cursors: Map<string, number>;
+};
+/** `card` is set for a card hop and absent for a chat hop (which has `hop.messageId` instead). */
+export type HopInput = { project: Project; hop: Hop; worker: Worker; card?: Card };
+
+/** Real child: Bun.spawn on its own handle — never pkill. `detached: true` (setsid) puts it in its OWN process group, so claude, its MCP server and its
+ *  Bash children can be stopped together, and so a runner that dies hard leaves a group its successor can find (procs.ts). */
+export const bunSpawn: Spawner = (cmd, { cwd, env }) => {
+  const p = Bun.spawn(cmd, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+  return {
+    pid: p.pid, stdout: p.stdout, exited: p.exited, stderrText: () => new Response(p.stderr).text(),
+    kill: (signal) => {
+      const sig = (signal ?? "SIGTERM") as NodeJS.Signals;
+      try { process.kill(-p.pid, sig); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ESRCH") return; p.kill(sig); } // the whole group, not just the pid
+    },
+  };
+};
+
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** What the child may see of the runner's environment: the login/shell basics only. Everything else — API keys, cloud credentials,
+ *  DATABASE_URL, SSH agent — stays out of a process that runs model-directed commands (security review F4). */
+const CHILD_ENV = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SHELL"] as const;
+export function childEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of CHILD_ENV) if (env[k] !== undefined) out[k] = env[k]!;
+  return out;
+}
+
+/** After the leader is gone: is anything of its group still running (claude's MCP server, a Bash child that shrugged off SIGTERM)? Give it the grace
+ *  period, then SIGKILL the group. True once the group is empty. */
+async function settleGroup(pgid: number, procs: Procs, graceMs: number, log: (line: string) => void): Promise<boolean> {
+  for (let waited = 0; waited < graceMs && procs.groupAlive(pgid); waited += 100) await procs.sleep(Math.min(100, graceMs));
+  if (procs.groupAlive(pgid)) {
+    log(`group ${pgid}: still has processes ${graceMs} ms after its leader ended — SIGKILL`);
+    try { procs.killGroup(pgid, "SIGKILL"); } catch (e) { log(`group ${pgid}: could not send SIGKILL: ${messageOf(e)}`); }
+    for (let waited = 0; waited < 2000 && procs.groupAlive(pgid); waited += 100) await procs.sleep(100);
+  }
+  return !procs.groupAlive(pgid);
+}
+
+/** SIGTERM now, SIGKILL after the grace period if it is still there — a child must not be able to keep a hop (and the repo) forever. */
+function terminate(child: Child, graceMs: number): void {
+  child.kill();
+  const t = setTimeout(() => child.kill("SIGKILL"), graceMs);
+  void child.exited.finally(() => clearTimeout(t));
+}
+
+const SERVER = fileURLToPath(new URL("../mcp/server.ts", import.meta.url));
+
+/** Only CAW's server (SPEC-A-008): with --strict-mcp-config no other MCP server — Slack, mail … — is reachable (R5). The server's
+ *  cwd is the worker's folder, so its script is given by absolute path. */
+export function buildMcpConfig(apiUrl: string, workerId: string, hopId: string): object {
+  // CAW_HOP_ID (contract v1.5): the MCP server names this hop on every worker write, so a write of a hop that is no longer running is refused
+  return { mcpServers: { caw: { type: "stdio", command: process.execPath, args: ["run", SERVER], env: { CAW_API_URL: apiUrl, CAW_WORKER_ID: workerId, CAW_HOP_ID: hopId } } } };
+}
+
+/** `--add-dir` and `--disallowedTools` take a LIST, so each is followed by another flag — never by the next positional. */
+/** a chat hop is a conversation, not coding: no built-in tool at all (`--tools ""`), and the coding ones denied by name as well (TASK-C-036 (c)) */
+const CHAT_DENY = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "WebFetch", "WebSearch"];
+
+export function buildArgs(a: { prompt: string; worker: Pick<Worker, "model" | "effort">; roots: string[]; settingsFile: string; mcpFile: string; skillsFile: string | null; chat?: boolean }): string[] {
+  return [
+    "-p", a.prompt,
+    "--model", a.worker.model, "--effort", a.worker.effort,
+    "--output-format", "stream-json", "--verbose",
+    "--permission-mode", "acceptEdits",
+    // the operator's own ~/.claude (hooks, plugins, CLAUDE.md) is not loaded (R-5); the generated settings below are added to the project's
+    "--setting-sources", "project",
+    "--settings", a.settingsFile,
+    "--mcp-config", a.mcpFile, "--strict-mcp-config",
+    ...(a.roots.length > 1 ? ["--add-dir", ...a.roots.slice(1)] : []),
+    ...(a.chat ? ["--tools", ""] : []),
+    "--disallowedTools", ...(a.chat ? CHAT_DENY : ["WebFetch", "WebSearch"]),
+    ...(a.skillsFile ? ["--append-system-prompt-file", a.skillsFile] : []),
+    "--no-session-persistence",
+  ];
+}
+
+const OUTCOME: Record<string, HopOutcome> = {
+  "card.commented": "commented", "card.handed_off": "handed_off", "card.status_set": "status", "card.question_opened": "asked",
+};
+const cardOf = (e: ApiEvent): string | undefined => (e.type === "card.question_opened" ? e.data?.askingCardId : e.data?.cardId);
+
+export async function eventsAfter(api: Api, projectId: string, after: number): Promise<ApiEvent[]> {
+  const all: ApiEvent[] = [];
+  for (;;) {
+    const page = await api.events(projectId, after, 500);
+    if (page.length === 0) return all; // until an EMPTY page: the API may give fewer than asked for
+    all.push(...page);
+    after = page[page.length - 1]!.seq;
+  }
+}
+
+async function latestSeq(deps: HopDeps, projectId: string): Promise<number> {
+  const seen = deps.cursors.get(projectId) ?? 0;
+  const tail = await eventsAfter(deps.api, projectId, seen);
+  const seq = tail.length ? tail[tail.length - 1]!.seq : seen;
+  deps.cursors.set(projectId, seq);
+  return seq;
+}
+
+/** Read newline-delimited text from a byte stream; `onLine` returns false to stop reading. A last line without "\n" still counts. */
+async function readLines(stream: ReadableStream<Uint8Array>, onLine: (line: string) => boolean, log: (line: string) => void): Promise<void> {
+  const reader = stream.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        if (line !== "" && !onLine(line)) return;
+      }
+    }
+    buf += dec.decode();
+    if (buf !== "") onLine(buf);
+  } finally {
+    await reader.cancel().catch((e) => log(`could not close claude's output stream: ${messageOf(e)}`));
+  }
+}
+
+/** The chat up to and including `messageId`, read page by page (oldest first) — a few pages at most; a failure to read it is not the hop's failure:
+ *  the worker then gets the plain prompt and `chat_context` still shows it the thread. */
+async function threadFor(deps: HopDeps, projectId: string, messageId: string): Promise<Thread | null> {
+  try {
+    const all: Awaited<ReturnType<Api["chatMessages"]>> = [];
+    let after: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const got = await deps.api.chatMessages(projectId, after);
+      if (got.length === 0) break;
+      all.push(...got);
+      if (got.some((m) => m.id === messageId)) return threadOf(all, messageId);
+      after = got[got.length - 1]!.id;
+    }
+    return null;
+  } catch (e) {
+    deps.log(`hop: could not read the chat for the thread (${messageOf(e)}) — plain prompt`);
+    return null;
+  }
+}
+
+/** `limit`: the subscription-limit signal the hop saw, if any — acting on it (ending the run) is the caller's. */
+export type HopResult = { hop: Hop; limit: Limit | null };
+
+export async function runHop(deps: HopDeps, input: HopInput): Promise<HopResult> {
+  const box = { limit: null as Limit | null };
+  const hop = await runOne(deps, input, box);
+  return { hop, limit: box.limit };
+}
+
+async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null }): Promise<Hop> {
+  const { api, config } = deps;
+  const log = (line: string) => deps.log(redact(line)); // nothing secret reaches the log or the stored note (F8)
+  const { project, hop, worker, card } = input;
+  const messageId = hop.messageId; // set = a CHAT hop: the entry worker answering an operator message (TASK-C-034)
+  const workerActor = `worker:${worker.id}`; // who the MCP tools write as — the hop's own writes are the runner's (api.ts)
+  const finish = (f: Finish) => api.finishHop(hop.id, f);
+  const dir = join(deps.tmpRoot, `hop-${hop.id}`);
+  let spawnedPid: number | undefined;
+  try {
+    const roots = project.workspace.roots;
+    // A chat hop works on no repo: it talks through MCP, so it needs no folder and is given none (see cwd below).
+    if (messageId === null && roots.length === 0) { log(`hop ${hop.id}: the project has no workspace folders — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.noRoots }); }
+    const skills = loadSkills(config.workspaceRoot, worker.skills);
+    if (!skills.ok) { log(`hop ${hop.id}: skill ${skills.missing} not found under ${config.workspaceRoot}/.claude/skills — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.skillMissing(skills.missing) }); }
+
+    const startSeq = await latestSeq(deps, project.id);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const mcpFile = join(dir, "mcp.json");
+    writeFileSync(mcpFile, JSON.stringify(buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
+    const skillsFile = skills.text === "" ? null : writeSkillsFile(dir, skills.text);
+    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId) }) : buildPrompt({ worker, card: card!, projectId: project.id });
+    const args = buildArgs({ prompt, worker, roots: messageId !== null ? [] : roots, settingsFile: deps.settingsFile, mcpFile, skillsFile, chat: messageId !== null });
+
+    // A child must never be started by a runner that is already stopping: nothing would be left to kill it.
+    if (deps.stopping?.()) { log(`hop ${hop.id}: runner is stopping — not started, left running for the next runner to interrupt`); return hop; }
+    // a chat hop runs in its own private hop folder, never in the project's repo
+    const child = deps.spawn([config.claudeBin, ...args], { cwd: messageId !== null ? dir : roots[0]!, env: childEnv(process.env) });
+    spawnedPid = child.pid;
+    const stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
+    const state = new StreamState();
+    const end = { note: null as string | null };
+    const lines: string[] = []; // the stream as claude printed it, for the trace
+    const stop = () => terminate(child, deps.killGraceMs ?? 5000);
+    const timer = setTimeout(() => { end.note ??= NOTES.timeout; stop(); }, config.hopMaxMs);
+    let code: number;
+    try {
+      // The record that lets the NEXT runner find this child if this one is killed hard (procs.ts). Written the moment the child exists.
+      if (child.pid !== undefined) {
+        const procs = deps.procs ?? realProcs;
+        const lstart = procs.inspect(child.pid)?.lstart;
+        if (lstart === undefined) log(`hop ${hop.id}: could not inspect the child (pid ${child.pid}) — no hop file`);
+        else writeHopFile(deps.hopsDir ?? defaultHopsDir(), {
+          hopId: hop.id, projectId: project.id, apiUrl: config.apiUrl, pid: child.pid, pgid: child.pid, instance: deps.instance ?? "?", claudeBin: config.claudeBin,
+          startedAt: new Date().toISOString(), lstart, runnerPid: process.pid, runnerLstart: procs.inspect(process.pid)?.lstart ?? "",
+        });
+      }
+      await readLines(child.stdout, (line) => {
+        lines.push(line);
+        const blocks = state.feed(line);
+        if (blocks.length > 0 && end.note === null) {
+          end.note = NOTES.blocked(worker.name, blocks[0]!.action);
+          log(`hop ${hop.id}: ${blocks[0]!.kind} block: ${blocks[0]!.text.trim().slice(0, 400)}`);
+          stop();
+          return false;
+        }
+        if (state.limit && end.note === null) {
+          // the subscription limit (REQ-012 R6): no point waiting for a child that cannot go on
+          box.limit = state.limit;
+          end.note = NOTES.limit(state.limit.resetsAt, (deps.now ?? (() => new Date()))());
+          log(`hop ${hop.id}: limit signal ${JSON.stringify(state.limit)}`);
+          stop();
+          return false;
+        }
+        return end.note === null;
+      }, log);
+      code = await child.exited;
+    } catch (e) {
+      stop(); // could not read its output: end it rather than leave a worker running unwatched in the repo
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      // kept whatever happened — a hop that is stopped or killed is the one somebody will want to read
+      if (deps.traceDir) {
+        try { log(`hop ${hop.id}: trace ${writeTrace(deps.traceDir, hop.id, lines)}`); } catch (e) { log(`hop ${hop.id}: could not write the trace: ${messageOf(e)}`); }
+      }
+    }
+
+    const sum = state.summary();
+    if (code !== 0 || sum.isError) log(`hop ${hop.id}: claude exit ${code}, is_error ${sum.isError}, stderr: ${(await stderr).slice(0, 300)}`);
+    log(`hop ${hop.id}: init: ${JSON.stringify(sum.init)}; usage: in ${sum.usage?.input ?? "-"}, cacheCreation ${sum.usage?.cacheCreation ?? "-"}, cacheRead ${sum.usage?.cacheRead ?? "-"}, out ${sum.usage?.output ?? "-"}`);
+    if (state.unparsed > 0) log(`hop ${hop.id}: ${state.unparsed} line(s) were not JSON`);
+    if (state.faults > 0) log(`hop ${hop.id}: ${state.faults} line(s) could not be read (unexpected shape)`);
+    if (deps.stopping?.()) { log(`hop ${hop.id}: runner is stopping — left running for the next runner to interrupt`); return hop; }
+    // a hop that ended without a result says which tools it used, so a reader of the hop (not only of the trace) can see where it went
+    const tools = toolSummary(lines, messageId !== null ? ["locate", "reply"] : []);
+    const withTools = (note: string) => [note, tools].filter((t) => t !== "").join(" · ").slice(0, 2000);
+    const tokens = { ...(sum.tokensIn === null ? {} : { tokensIn: sum.tokensIn }), ...(sum.tokensOut === null ? {} : { tokensOut: sum.tokensOut }) };
+    // the limit note is REQ-012's fixed Thai wording and its cause is known; every other stop says where the hop had got to
+    if (end.note !== null) return await finish({ outcome: "stopped", note: box.limit ? end.note : withTools(end.note), ...tokens });
+
+    const events = (await eventsAfter(api, project.id, startSeq)).filter((e) => e.actor === workerActor);
+    // a child that exited non-zero says so in the note — a reader of the hop must not think it ended cleanly (Sector's review)
+    const exit = code !== 0 ? `exit ${code}` : "";
+    const failed = () => finish({ outcome: "failed", note: withTools(exit === "" ? NOTES.noResult : `${NOTES.noResult} · ${exit}`), ...tokens });
+
+    if (messageId !== null) {
+      // The reply decides (SPEC-C-004 § 2, C-Q7): no reply = the operator got no answer = failed. What it carried says the rest.
+      const replied = events.find((e) => e.type === "chat.replied" && e.data?.messageId === messageId && e.data?.hopId === hop.id);
+      if (!replied) return await failed();
+      const proposed = events.some((e) => e.type === "proposal.made" && e.data?.messageId === messageId);
+      const amended = replied.data?.amendment != null;
+      const outcome: HopOutcome = proposed && amended ? "proposed_and_amended" : proposed ? "proposed" : amended ? "amended" : "replied";
+      return await finish({ outcome, note: exit, ...tokens });
+    }
+    const last = events.filter((e) => cardOf(e) === card!.id && OUTCOME[e.type] !== undefined).pop();
+    return last ? await finish({ outcome: OUTCOME[last.type]!, note: exit, ...tokens }) : await failed();
+  } catch (e) {
+    const msg = messageOf(e);
+    log(`hop ${hop.id}: ${e instanceof Error ? (e.stack ?? msg) : msg}`);
+    return await finish({ outcome: "failed", note: redact(NOTES.fault(msg)).slice(0, 300) });
+  } finally {
+    // the hop's result must not be replaced by a clean-up failure
+    try { rmSync(dir, { recursive: true, force: true }); } catch (e) { log(`hop ${hop.id}: could not remove ${dir}: ${messageOf(e)}`); }
+    // the hop is over: its file goes too — unless the runner is stopping, when the next runner needs it
+    if (!deps.stopping?.()) {
+      try {
+        // the file is the next runner's only way to find what is left of this hop: it goes only when the whole group is gone
+        const gone = spawnedPid === undefined || (await settleGroup(spawnedPid, deps.procs ?? realProcs, deps.killGraceMs ?? 5000, log));
+        if (gone) removeHopFile(deps.hopsDir ?? defaultHopsDir(), hop.id);
+        else log(`hop ${hop.id}: its process group ${spawnedPid} is still alive — the hop file is kept for the next runner`);
+      } catch (e) { log(`hop ${hop.id}: could not remove its hop file: ${messageOf(e)}`); }
+    }
+  }
+}

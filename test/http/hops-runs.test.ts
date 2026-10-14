@@ -18,7 +18,7 @@ test("a hop: 201 Hop (running) · a second one while it runs → 409 hop_running
   const { call, project, a, b, c1, c2, P } = await twoCards();
   const h = await hopOn(call, project.id, c1.id, a.id);
   expect(h.status).toBe(201);
-  expect(h.json).toEqual({ id: h.json.id, projectId: project.id, runId: null, claimedBy: null, cardId: c1.id, workerId: a.id, startedAt: h.json.startedAt, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "" });
+  expect(h.json).toEqual({ id: h.json.id, projectId: project.id, runId: null, claimedBy: null, cardId: c1.id, messageId: null, locatedKeys: null, workerId: a.id, startedAt: h.json.startedAt, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "" });
   const running = await hopOn(call, project.id, c2.id, b.id);
   expect([running.status, running.json.error.code]).toEqual([409, "hop_running"]);
   expect((await call("GET", P)).json.hopsUsed).toBe(0); // counted when it finishes
@@ -43,7 +43,9 @@ test("hop errors: unknown card / hop / project → 404 · a worker outside the c
   expect([nm.status, nm.json.error.code]).toEqual([400, "not_a_member"]);
 
   const dep = (await newCard(call, project.id, { dependsOn: [c1.id] })).json; // waits on c1
-  const q = (await call("POST", `/v1/cards/${c1.id}/question`, { text: "ถาม", proposedDefault: "d", cases: ["x"] }, `worker:${a.id}`)).json;
+  const h0 = (await hopOn(call, project.id, c1.id, a.id)).json; // v1.5: Ann asks from her running hop on c1
+  const q = (await call("POST", `/v1/cards/${c1.id}/question`, { text: "ถาม", proposedDefault: "d", cases: ["x"] }, `worker:${a.id}`, { "x-caw-hop": h0.id })).json;
+  await finish(call, h0.id, "asked");
   for (const card of [dep, q]) { // waiting on a dependency · a question card
     const r = await hopOn(call, project.id, card.id, a.id);
     expect([card.number, r.status, r.json.error.code]).toEqual([card.number, 409, "not_workable"]);

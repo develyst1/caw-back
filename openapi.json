@@ -220,6 +220,150 @@
         ],
         "type": "object"
       },
+      "ChatMessage": {
+        "properties": {
+          "amendment": {
+            "properties": {
+              "blueprintMessageId": {
+                "type": "string"
+              },
+              "link": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "blueprintMessageId",
+              "link"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "author": {
+            "description": "operator | worker:<id>",
+            "type": "string"
+          },
+          "chatHop": {
+            "description": "the newest chat hop on this message (computed on read)",
+            "properties": {
+              "endedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "endedAt",
+              "outcome"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "proposalId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "questions": {
+            "items": {
+              "properties": {
+                "cases": {
+                  "items": {
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "maxItems": 10,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "proposedDefault": {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "text": {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "proposedDefault",
+                "cases"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "replyHopId": {
+            "description": "set on an operator message when a hop answers it",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replyTo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retryRequestedAt": {
+            "description": "set when the operator asked for a retry; cleared when the next hop starts on the message",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "author",
+          "text",
+          "replyTo",
+          "replyHopId",
+          "questions",
+          "proposalId",
+          "amendment",
+          "at",
+          "retryRequestedAt",
+          "chatHop"
+        ],
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "error": {
@@ -281,7 +425,10 @@
       "Hop": {
         "properties": {
           "cardId": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "claimedBy": {
             "type": [
@@ -298,6 +445,22 @@
           "id": {
             "type": "string"
           },
+          "locatedKeys": {
+            "description": "a chat hop: the keys of every locate it made (v1.6); never the spec text",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "messageId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "note": {
             "type": "string"
           },
@@ -310,6 +473,10 @@
               "failed",
               "stopped",
               "interrupted",
+              "replied",
+              "proposed",
+              "amended",
+              "proposed_and_amended",
               null
             ],
             "type": [
@@ -351,6 +518,8 @@
           "runId",
           "claimedBy",
           "cardId",
+          "messageId",
+          "locatedKeys",
           "workerId",
           "startedAt",
           "endedAt",
@@ -365,6 +534,16 @@
         "properties": {
           "actor": {
             "type": "string"
+          },
+          "allowed": {
+            "description": "handoff_refused only: who the sender could have handed the card to",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "at": {
             "type": "string"
@@ -390,7 +569,8 @@
           "type": {
             "enum": [
               "comment",
-              "handoff"
+              "handoff",
+              "handoff_refused"
             ],
             "type": "string"
           }
@@ -402,6 +582,7 @@
           "text",
           "fromWorkerId",
           "toWorkerId",
+          "allowed",
           "at"
         ],
         "type": "object"
@@ -500,6 +681,117 @@
             "type": "object"
           }
         ]
+      },
+      "Proposal": {
+        "properties": {
+          "cardIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "hopsTotal": {
+            "description": "the sum of the items' hops, computed on read",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "properties": {
+                "anchor": {
+                  "properties": {
+                    "key": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "version": {
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "version"
+                  ],
+                  "type": "object"
+                },
+                "dependsOn": {
+                  "default": [],
+                  "description": "indexes into the proposal's items",
+                  "items": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "hops": {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "title": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "todo": {
+                  "maxLength": 8000,
+                  "type": "string"
+                },
+                "workerId": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title",
+                "todo",
+                "anchor",
+                "workerId",
+                "hops"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "accepted",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "messageId",
+          "version",
+          "items",
+          "status",
+          "cardIds",
+          "createdAt",
+          "hopsTotal"
+        ],
+        "type": "object"
       },
       "Run": {
         "properties": {
@@ -725,7 +1017,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -735,7 +1027,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -755,7 +1047,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -811,7 +1103,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -821,7 +1113,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -888,7 +1180,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -898,7 +1190,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1016,7 +1308,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -1026,7 +1318,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1046,7 +1338,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -1120,7 +1412,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -1130,7 +1422,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1176,7 +1468,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1248,7 +1540,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -1258,7 +1550,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1278,7 +1570,291 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          }
+        }
+      }
+    },
+    "/v1/chat/{messageId}/context": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "messageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "chain": {
+                      "$ref": "#/components/schemas/Chain"
+                    },
+                    "message": {
+                      "$ref": "#/components/schemas/ChatMessage"
+                    },
+                    "project": {
+                      "$ref": "#/components/schemas/Project"
+                    },
+                    "thread": {
+                      "items": {
+                        "$ref": "#/components/schemas/ChatMessage"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "thread",
+                    "project",
+                    "chain"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "what a worker needs to answer the message"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      }
+    },
+    "/v1/chat/{messageId}/reply": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "messageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "amendment": {
+                    "properties": {
+                      "blueprintMessageId": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "blueprintMessageId"
+                    ],
+                    "type": "object"
+                  },
+                  "proposalId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "questions": {
+                    "items": {
+                      "properties": {
+                        "cases": {
+                          "items": {
+                            "maxLength": 500,
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "maxItems": 10,
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "proposedDefault": {
+                          "maxLength": 2000,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "text": {
+                          "maxLength": 2000,
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "proposedDefault",
+                        "cases"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 10,
+                    "type": "array"
+                  },
+                  "text": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "the entry worker's reply",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessage"
+                }
+              }
+            },
+            "description": "the reply"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          }
+        }
+      }
+    },
+    "/v1/chat/{messageId}/retry": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "messageId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {},
+                  "type": "object"
+                }
+              }
+            },
+            "description": "retry requested — the runner treats the message like a new one"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -1315,7 +1891,11 @@
                           "asked",
                           "failed",
                           "stopped",
-                          "interrupted"
+                          "interrupted",
+                          "replied",
+                          "proposed",
+                          "amended",
+                          "proposed_and_amended"
                         ],
                         "type": "string"
                       },
@@ -1373,7 +1953,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -1393,7 +1973,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -1456,7 +2036,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           }
         }
       }
@@ -1557,7 +2137,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -1567,7 +2147,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1587,7 +2167,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           },
           "502": {
             "content": {
@@ -1634,6 +2214,101 @@
               }
             },
             "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      }
+    },
+    "/v1/projects/{id}/amendments": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "about": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 20,
+                    "type": "array"
+                  },
+                  "request": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "a request to change the spec, sent to Blueprint's chat",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Blueprint's answer, exactly as returned"
+                }
+              }
+            },
+            "description": "Blueprint's Message"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
           }
         }
       }
@@ -1717,7 +2392,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -1813,7 +2488,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -1823,7 +2498,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -1843,7 +2518,7 @@
                 }
               }
             },
-            "description": "anchor_not_in_version · version_not_confirmed"
+            "description": "anchor_not_in_version · version_not_confirmed · anchor_not_located"
           },
           "502": {
             "content": {
@@ -1950,7 +2625,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -1960,7 +2635,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2029,7 +2704,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -2039,7 +2714,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2059,7 +2734,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -2115,7 +2790,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -2125,7 +2800,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2191,7 +2866,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -2201,7 +2876,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2221,7 +2896,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -2273,7 +2948,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -2283,7 +2958,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2303,7 +2978,158 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          }
+        }
+      }
+    },
+    "/v1/projects/{id}/chat": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "messages": {
+                      "items": {
+                        "$ref": "#/components/schemas/ChatMessage"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "messages"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "oldest first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "text": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "the operator's message",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessage"
+                }
+              }
+            },
+            "description": "posted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
           }
         }
       }
@@ -2374,7 +3200,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -2450,7 +3276,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -2489,6 +3315,10 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "messageId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "runId": {
                     "minLength": 1,
                     "type": "string"
@@ -2499,14 +3329,13 @@
                   }
                 },
                 "required": [
-                  "cardId",
                   "workerId"
                 ],
                 "type": "object"
               }
             }
           },
-          "description": "start a hop: one turn of one worker on one workable card",
+          "description": "start a hop: one turn of one worker on one workable card — or, as the entry worker, on one unanswered chat message",
           "required": true
         },
         "responses": {
@@ -2528,7 +3357,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -2548,7 +3377,94 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          }
+        }
+      }
+    },
+    "/v1/projects/{id}/locate": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "request": {
+                    "maxLength": 1000,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "what to find in the confirmed spec",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Blueprint's answer, exactly as returned"
+                }
+              }
+            },
+            "description": "Blueprint's Located"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
           }
         }
       }
@@ -2611,7 +3527,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -2621,7 +3537,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2632,6 +3548,290 @@
               }
             },
             "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      }
+    },
+    "/v1/projects/{id}/parts/{key}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Blueprint's PartContext, exactly as returned — never stored"
+                }
+              }
+            },
+            "description": "the part at that version"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
+          }
+        }
+      }
+    },
+    "/v1/projects/{id}/proposals": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "messageId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "proposals": {
+                      "items": {
+                        "$ref": "#/components/schemas/Proposal"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "proposals"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "newest first"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "items": {
+                    "items": {
+                      "properties": {
+                        "anchor": {
+                          "properties": {
+                            "key": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "version": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "key",
+                            "version"
+                          ],
+                          "type": "object"
+                        },
+                        "dependsOn": {
+                          "default": [],
+                          "description": "indexes into the proposal's items",
+                          "items": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "type": "array"
+                        },
+                        "hops": {
+                          "maximum": 1000,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "title": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "todo": {
+                          "maxLength": 8000,
+                          "type": "string"
+                        },
+                        "workerId": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "todo",
+                        "anchor",
+                        "workerId",
+                        "hops"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "messageId": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "messageId",
+                  "items"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "description": "cards the entry worker proposes for the operator's message",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Proposal"
+                }
+              }
+            },
+            "description": "the open proposal"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "anchor_not_in_version · version_not_confirmed · anchor_not_located"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
           }
         }
       }
@@ -2737,7 +3937,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -2801,7 +4001,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -2821,7 +4021,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -2882,7 +4082,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -2892,7 +4092,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -2903,6 +4103,103 @@
               }
             },
             "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      }
+    },
+    "/v1/proposals/{id}/accept": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "cards": {
+                      "items": {
+                        "$ref": "#/components/schemas/Card"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "cards"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the cards made"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "anchor_not_in_version · version_not_confirmed · anchor_not_located"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
           }
         }
       }
@@ -2970,7 +4267,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "404": {
             "content": {
@@ -2990,7 +4287,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -3100,7 +4397,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -3110,7 +4407,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "409": {
             "content": {
@@ -3120,7 +4417,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }
@@ -3181,7 +4478,7 @@
                 }
               }
             },
-            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question"
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
           },
           "403": {
             "content": {
@@ -3191,7 +4488,7 @@
                 }
               }
             },
-            "description": "operator_only · not_your_card"
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -3211,7 +4508,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
           }
         }
       }

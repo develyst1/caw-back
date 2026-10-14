@@ -22,11 +22,18 @@ test("rebuild-check → same:true after a sequence touching every event type of 
   await call("PUT", `${P}/chain/entry`, { workerId: a.id });
   const k1 = (await newCard(call, project.id, { assigneeId: a.id })).json;
   const k2 = (await newCard(call, project.id, { assigneeId: c.id, dependsOn: [k1.id] })).json;
-  await call("PATCH", `/v1/cards/${k1.id}/status`, { status: "doing" }, `worker:${a.id}`);
-  await call("POST", `/v1/cards/${k1.id}/comments`, { text: "บันทึก" }, `worker:${a.id}`);
-  await call("POST", `/v1/cards/${k1.id}/handoff`, { toWorkerId: b.id, text: "ส่งต่อ" }, `worker:${a.id}`);
+  // v1.5: a worker writes from a running hop of its own on the card
+  const hopA = (await call("POST", `${P}/hops`, { cardId: k1.id, workerId: a.id })).json;
+  const HA = { "x-caw-hop": hopA.id };
+  await call("PATCH", `/v1/cards/${k1.id}/status`, { status: "doing" }, `worker:${a.id}`, HA);
+  await call("POST", `/v1/cards/${k1.id}/comments`, { text: "บันทึก" }, `worker:${a.id}`, HA);
+  expect((await call("POST", `/v1/cards/${k1.id}/handoff`, { toWorkerId: c.id, text: "ข้ามสาย" }, `worker:${a.id}`, HA)).status).toBe(409); // a → c has no edge: refused, and recorded (v1.3)
+  await call("POST", `/v1/cards/${k1.id}/handoff`, { toWorkerId: b.id, text: "ส่งต่อ" }, `worker:${a.id}`, HA);
+  await call("PATCH", `/v1/hops/${hopA.id}`, { outcome: "handed_off" });
   await call("PATCH", `/v1/cards/${k2.id}/assignee`, { workerId: b.id });
-  const q = (await call("POST", `/v1/cards/${k1.id}/question`, { text: "ถามหน่อย", proposedDefault: "ค่าเริ่มต้น", cases: ["ก", "ข"] }, `worker:${b.id}`)).json;
+  const hopB = (await call("POST", `${P}/hops`, { cardId: k1.id, workerId: b.id })).json;
+  const q = (await call("POST", `/v1/cards/${k1.id}/question`, { text: "ถามหน่อย", proposedDefault: "ค่าเริ่มต้น", cases: ["ก", "ข"] }, `worker:${b.id}`, { "x-caw-hop": hopB.id })).json;
+  await call("PATCH", `/v1/hops/${hopB.id}`, { outcome: "asked" });
   expect(await check()).toEqual({ same: true });
   await call("POST", `/v1/cards/${q.id}/answer`, { answer: "ตอบแล้ว" });
   await db.execute(sql`update caw.cards set spec_changed_version = 2 where id = ${k2.id}`); // what A-073's pull will write; the clear below then makes it null in both
@@ -38,7 +45,8 @@ test("rebuild-check → same:true after a sequence touching every event type of 
 
   const types = new Set((await db.select({ type: events.type }).from(events)).map((e) => e.type));
   for (const t of ["project.created", "worker.created", "worker.combined", "chain.member_added", "chain.member_removed", "chain.edge_added", "chain.edge_removed", "chain.entry_set",
-    "card.created", "card.status_set", "card.assigned", "card.handed_off", "card.commented", "card.question_opened", "card.question_answered", "card.spec_change_cleared"]) {
+    "card.created", "card.status_set", "card.assigned", "card.handed_off", "card.handoff_refused", "card.commented", "card.question_opened", "card.question_answered", "card.spec_change_cleared",
+    "hop.started", "hop.finished"]) {
     expect([t, types.has(t)]).toEqual([t, true]);
   }
 });

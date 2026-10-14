@@ -9,7 +9,8 @@
     "db:migrate": "bun run src/scripts/migrate.ts",
     "db:inspect": "bun run src/scripts/db-inspect.ts",
     "db:fix-journal": "bun run src/scripts/db-fix-journal.ts",
-    "mcp": "bun run src/mcp/server.ts"
+    "mcp": "bun run src/mcp/server.ts",
+    "runner": "bun run src/runner/main.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.8",

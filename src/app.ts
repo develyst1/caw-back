@@ -5,9 +5,12 @@ import { createFollower, type Follower } from "./follow/pull";
 import { actorRule, type Env } from "./http/actor";
 import { onError, unknownRoute, validationHook } from "./http/errors";
 import { cardRoutes } from "./http/routes/cards";
+import { chatRoutes } from "./http/routes/chat";
 import { chainRoutes } from "./http/routes/chain";
 import { followRoutes } from "./http/routes/follow";
 import { hopRoutes } from "./http/routes/hops";
+import { proposalRoutes } from "./http/routes/proposals";
+import { seamRoutes } from "./http/routes/seam";
 import { projectRoutes } from "./http/routes/projects";
 import { workerRoutes } from "./http/routes/workers";
 
@@ -24,6 +27,9 @@ export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follow
   chainRoutes(app, db);
   cardRoutes(app, db, blueprint);
   hopRoutes(app, db);
+  chatRoutes(app, db);
+  proposalRoutes(app, db, blueprint);
+  seamRoutes(app, db, blueprint);
   followRoutes(app, follow);
 
   // The document is generated from the route schemas above, and lists itself.

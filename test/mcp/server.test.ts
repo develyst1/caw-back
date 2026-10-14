@@ -1,20 +1,20 @@
 // TASK-A-074 (REQ-010 R10, AC-9): the MCP server a worker is given — six tools, each one HTTP call to the CAW API as
-// `X-CAW-Actor: worker:<CAW_WORKER_ID>`, so the API's rules apply unchanged. Tested through the SDK's own client:
+// `X-CAW-Actor: worker:<CAW_WORKER_ID>` and (v1.5, D-054) `X-CAW-Hop: <CAW_HOP_ID>`, so the API's rules apply unchanged. Tested through the SDK's own client:
 // in memory against an in-process app (PGlite, fake Blueprint with recorded answers), and once over real stdio.
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createMcpServer } from "../../src/mcp/server";
-import { chainOf3, newCard, setup } from "../helpers/api";
+import { chainOf3, newCard, openHop, setup } from "../helpers/api";
 
 const closers: (() => Promise<void> | void)[] = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
 
 /** a client connected in memory to a CAW MCP server acting as worker `workerId` over the in-process app */
-async function connect(app: { request: (u: string, i?: RequestInit) => Response | Promise<Response> }, workerId: string) {
+async function connect(app: { request: (u: string, i?: RequestInit) => Response | Promise<Response> }, workerId: string, hopId?: string) {
   const server = createMcpServer({
-    apiUrl: "http://caw.test", workerId,
+    apiUrl: "http://caw.test", workerId, hopId,
     fetch: (input, init) => Promise.resolve(app.request(new URL(input).pathname + new URL(input).search, init)),
   });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -37,14 +37,15 @@ async function world() {
   const chain = await chainOf3(s.call);
   await s.call("POST", `/v1/projects/${chain.project.id}/chain/edges`, { from: chain.a.id, to: chain.b.id });
   const c1 = (await newCard(s.call, chain.project.id, { assigneeId: chain.a.id, title: "งานของ Ann" })).json;
-  return { ...s, ...chain, c1 };
+  const hop = await openHop(s.call, chain.project.id, c1.id, chain.a.id); // Ann's running hop on c1 — what the runner would hand her as CAW_HOP_ID
+  return { ...s, ...chain, c1, hop };
 }
 
-test("lists the six tools with their input schemas", async () => {
+test("lists the tools with their input schemas — the six card tools (the chat tools are in chat-tools.test.ts)", async () => {
   const w = await world();
   const { client } = await connect(w.app, w.a.id);
   const tools = (await client.listTools()).tools;
-  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "comment", "hand_off", "my_cards", "set_status"]);
+  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "chat_context", "comment", "hand_off", "locate", "my_cards", "propose_cards", "reply", "send_amendment", "set_status"]); // 11 since v1.4
   const req = (name: string) => (tools.find((t) => t.name === name)!.inputSchema as { required?: string[] }).required ?? [];
   expect(req("my_cards")).toEqual([]);
   expect(req("card_context")).toEqual(["cardId"]);
@@ -77,7 +78,7 @@ test("my_cards: the worker's own cards, workable first, across projects — or o
 
 test("card_context: the API's CardContext — Blueprint's spec untouched, notes, decisions", async () => {
   const w = await world();
-  const { call } = await connect(w.app, w.a.id);
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
   await call("comment", { cardId: w.c1.id, text: "เริ่มอ่าน spec" });
   const r = await call("card_context", { cardId: w.c1.id });
   expect(r.isError).toBe(false);
@@ -91,7 +92,7 @@ test("card_context: the API's CardContext — Blueprint's spec untouched, notes,
 
 test("comment · set_status · hand_off · ask_operator: each one API call as this worker; the results are the API's JSON", async () => {
   const w = await world();
-  const { call } = await connect(w.app, w.a.id);
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
 
   const note = await call("comment", { cardId: w.c1.id, text: "ข้อสังเกต" });
   expect(note.json).toMatchObject({ type: "comment", actor: `worker:${w.a.id}`, text: "ข้อสังเกต" });
@@ -115,19 +116,46 @@ test("comment · set_status · hand_off · ask_operator: each one API call as th
   expect(events.filter((e: any) => e.actor === `worker:${w.a.id}`).map((e: any) => e.type)).toEqual(["card.commented", "card.status_set", "card.question_opened", "card.handed_off"]);
 });
 
-test("the API's rules apply unchanged: another worker's card → the 403 code as a tool error; off the chain → chain_broken with allowed", async () => {
+test("the API's rules apply unchanged: no hop → hop_required; someone else's hop → hop_not_running; off the chain → chain_broken with allowed; a card that moved → not_your_card — all as tool errors", async () => {
   const w = await world();
-  const ben = await connect(w.app, w.b.id); // c1 is Ann's
-  for (const [tool, args] of [
+  const writes = [
     ["comment", { cardId: w.c1.id, text: "x" }], ["set_status", { cardId: w.c1.id, status: "done" }],
     ["hand_off", { cardId: w.c1.id, toWorkerId: w.c.id, text: "x" }], ["ask_operator", { cardId: w.c1.id, text: "t", proposedDefault: "d", cases: ["c"] }],
-  ] as const) {
-    const r = await ben.call(tool, args);
-    expect([tool, r.isError, r.json.error.code]).toEqual([tool, true, "not_your_card"]);
+  ] as const;
+  const noHop = await connect(w.app, w.b.id); // no CAW_HOP_ID at all
+  for (const [tool, args] of writes) {
+    const r = await noHop.call(tool, args);
+    expect([tool, r.isError, r.json.error.code]).toEqual([tool, true, "hop_required"]);
   }
-  const ann = await connect(w.app, w.a.id);
+  const ben = await connect(w.app, w.b.id, w.hop.id); // Ben presenting Ann's hop
+  for (const [tool, args] of writes) {
+    const r = await ben.call(tool, args);
+    expect([tool, r.isError, r.json.error.code]).toEqual([tool, true, "hop_not_running"]);
+  }
+  const ann = await connect(w.app, w.a.id, w.hop.id);
   const broken = await ann.call("hand_off", { cardId: w.c1.id, toWorkerId: w.c.id, text: "ส่ง QA" }); // Ann → Cat has no edge
   expect([broken.isError, broken.json.error.code, broken.json.error.details]).toEqual([true, "chain_broken", { from: w.a.id, allowed: [w.b.id] }]);
+  // the card moves to Ben while Ann's hop still runs: her hop passes the hop check, the card is no longer hers
+  await w.call("PATCH", `/v1/cards/${w.c1.id}/assignee`, { workerId: w.b.id });
+  for (const [tool, args] of writes) {
+    const r = await ann.call(tool, args);
+    expect([tool, r.isError, r.json.error.code]).toEqual([tool, true, "not_your_card"]);
+  }
+});
+
+test("CAW_HOP_ID: the writes carry it as X-CAW-Hop; the reads need nothing; without it every write tool answers hop_required", async () => {
+  const w = await world();
+  const noHop = await connect(w.app, w.a.id);
+  expect((await noHop.call("my_cards")).isError).toBe(false);
+  expect((await noHop.call("card_context", { cardId: w.c1.id })).isError).toBe(false);
+  const refused = await noHop.call("comment", { cardId: w.c1.id, text: "ไม่มี hop" });
+  expect([refused.isError, refused.json.error.code]).toEqual([true, "hop_required"]);
+  const withHop = await connect(w.app, w.a.id, w.hop.id);
+  expect((await withHop.call("comment", { cardId: w.c1.id, text: "มี hop" })).json).toMatchObject({ type: "comment", text: "มี hop" });
+  // the hop ends (the runner finished it): the same server can no longer write
+  await w.call("PATCH", `/v1/hops/${w.hop.id}`, { outcome: "commented" });
+  const late = await withHop.call("comment", { cardId: w.c1.id, text: "ช้าไป" });
+  expect([late.isError, late.json.error.code, late.json.error.details.outcome]).toEqual([true, "hop_not_running", "commented"]);
 });
 
 test("a worker CAW does not know: writes come back as the unknown_worker tool error", async () => {
@@ -155,15 +183,19 @@ test("over real stdio: `bun run src/mcp/server.ts` with CAW_API_URL + CAW_WORKER
   closers.push(() => api.stop(true));
   const transport = new StdioClientTransport({
     command: process.execPath, args: ["run", "src/mcp/server.ts"], cwd: new URL("../..", import.meta.url).pathname,
-    env: { ...(process.env as Record<string, string>), CAW_API_URL: `http://127.0.0.1:${api.port}`, CAW_WORKER_ID: w.a.id },
+    env: { ...(process.env as Record<string, string>), CAW_API_URL: `http://127.0.0.1:${api.port}`, CAW_WORKER_ID: w.a.id, CAW_HOP_ID: w.hop.id },
   });
   const client = new Client({ name: "stdio-test", version: "1" });
   await client.connect(transport);
   closers.push(() => client.close());
-  expect((await client.listTools()).tools).toHaveLength(6);
+  expect((await client.listTools()).tools).toHaveLength(11);
   const r = await client.callTool({ name: "my_cards", arguments: {} });
   const cards = JSON.parse((r.content as { text: string }[])[0]!.text).cards;
   expect(cards.map((c: any) => c.title)).toEqual(["งานของ Ann"]);
+  // CAW_HOP_ID reaches the API as X-CAW-Hop: a write over real stdio works
+  const c = await client.callTool({ name: "comment", arguments: { cardId: w.c1.id, text: "จาก stdio" } });
+  expect(c.isError).not.toBe(true);
+  expect(JSON.parse((c.content as { text: string }[])[0]!.text)).toMatchObject({ type: "comment", text: "จาก stdio", actor: `worker:${w.a.id}` });
 });
 
 test("CAW_WORKER_ID is required: without it the server refuses to start — one line, exit 1", async () => {

@@ -1,7 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Blueprint } from "../../blueprint/client";
 import type { Db } from "../../db/client";
-import { checkRebuild, createProject, getProject, listEvents, listProjects, setMode, setWorkspace } from "../../projects/service";
+import { checkRebuild, createProject, getProject, listEvents, listProjects, readPart, setMode, setWorkspace } from "../../projects/service";
 import { type Env, requireOperator } from "../actor";
 import { errors } from "../errors";
 
@@ -55,6 +55,15 @@ export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprin
     request: { params: Id, body: { ...json(z.object({ roots: z.array(Root).max(20) }), "the folders a worker may work in (replaces the list)"), required: true } },
     responses: { 200: json(ProjectSchema, "the project"), 400: errors[400], 403: errors[403], 404: errors[404] },
   }), async (c) => c.json(await setWorkspace(db, c.get("actor"), c.req.valid("param").id, c.req.valid("json").roots), 200));
+
+  app.openapi(createRoute({
+    method: "get", path: "/v1/projects/{id}/parts/{key}",
+    request: { params: z.object({ id: z.string(), key: z.string() }), query: z.object({ version: z.coerce.number().int().min(1).optional() }) },
+    responses: {
+      200: json(z.unknown().openapi({ description: "Blueprint's PartContext, exactly as returned — never stored" }), "the part at that version"),
+      400: errors[400], 404: errors[404], 502: errors[502],
+    },
+  }), async (c) => c.json(await readPart(db, blueprint, c.req.valid("param").id, c.req.valid("param").key, c.req.valid("query").version) as never, 200));
 
   app.openapi(createRoute({
     method: "get", path: "/v1/projects/{id}/events",

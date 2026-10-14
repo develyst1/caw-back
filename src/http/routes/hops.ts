@@ -7,11 +7,12 @@ import { errors } from "../errors";
 const json = <T extends z.ZodType>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
 const body = <T extends z.ZodType>(schema: T, description: string) => ({ ...json(schema, description), required: true as const });
 const ProjectId = z.object({ id: z.string() });
-const Outcome = z.enum(["commented", "handed_off", "status", "asked", "failed", "stopped", "interrupted"]);
+const Outcome = z.enum(["commented", "handed_off", "status", "asked", "failed", "stopped", "interrupted", "replied", "proposed", "amended", "proposed_and_amended"]);
 const StopReason = z.enum(["budget_spent", "nothing_workable", "failed_review_twice", "limit_reached", "operator_stopped", "error"]);
 
 const HopSchema = z.object({
-  id: z.string(), projectId: z.string(), runId: z.string().nullable(), claimedBy: z.string().nullable(), cardId: z.string(), workerId: z.string(),
+  id: z.string(), projectId: z.string(), runId: z.string().nullable(), claimedBy: z.string().nullable(), cardId: z.string().nullable(), messageId: z.string().nullable(),
+  locatedKeys: z.array(z.string()).nullable().openapi({ description: "a chat hop: the keys of every locate it made (v1.6); never the spec text" }), workerId: z.string(),
   startedAt: z.string(), endedAt: z.string().nullable(), outcome: Outcome.nullable(), tokensIn: z.number().int().nullable(), tokensOut: z.number().int().nullable(), note: z.string(),
 }).openapi("Hop");
 const RunSchema = z.object({
@@ -29,8 +30,8 @@ export function hopRoutes(app: OpenAPIHono<Env>, db: Db) {
   app.openapi(createRoute({
     method: "post", path: "/v1/projects/{id}/hops",
     request: { params: ProjectId, body: body(z.object({
-      cardId: z.string().min(1), workerId: z.string().min(1), runId: z.string().min(1).optional(), claim: z.string().min(1).max(200).optional(),
-    }), "start a hop: one turn of one worker on one workable card") },
+      cardId: z.string().min(1).optional(), messageId: z.string().min(1).optional(), workerId: z.string().min(1), runId: z.string().min(1).optional(), claim: z.string().min(1).max(200).optional(),
+    }).refine((b) => (b.cardId === undefined) !== (b.messageId === undefined), "give exactly one of cardId and messageId"), "start a hop: one turn of one worker on one workable card — or, as the entry worker, on one unanswered chat message") },
     responses: { 201: json(HopSchema, "the running hop"), 400: errors[400], 404: errors[404], 409: errors[409] },
   }), async (c) => c.json(await startHop(db, c.get("actor"), c.req.valid("param").id, c.req.valid("json")), 201));
 

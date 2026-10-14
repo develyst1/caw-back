@@ -53,6 +53,15 @@ export async function setWorkspace(db: Db, actor: Actor, projectId: string, root
   return state.project!;
 }
 
+// v1.7: a read-only proxy to Blueprint's part context — one seam call, as returned, nothing stored (REQ-010 R1). `version` defaults
+// to the project's latestSeenVersion. Blueprint has no such part (or no such version) → 404 part_not_found.
+export async function readPart(db: Db, blueprint: Blueprint, projectId: string, key: string, version?: number): Promise<unknown> {
+  const project = await getProject(db, projectId);
+  const body = await blueprint.partContext(project.blueprintProjectId, version ?? project.latestSeenVersion, key);
+  if (body === null) throw new ApiError(404, "part_not_found", `Blueprint has no part ${key} at version ${version ?? project.latestSeenVersion}`);
+  return body;
+}
+
 export async function getProject(db: Db, id: string): Promise<Project> {
   const { project } = await loadState(db, id);
   if (!project) throw notFound("project");

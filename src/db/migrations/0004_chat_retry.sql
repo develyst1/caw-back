@@ -1,0 +1,1 @@
+ALTER TABLE "caw"."chat_messages" ADD COLUMN "retry_requested_at" timestamp with time zone;

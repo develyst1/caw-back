@@ -12,11 +12,11 @@ import type { Db } from "../db/client";
 import { hops as hopsTable, runs as runsTable } from "../db/schema";
 import { ApiError, notFound } from "../http/errors";
 
-export type Hop = Omit<HopState, "workerId"> & { workerId: string };
+export type Hop = HopState;
 export type Run = RunState & { hopsUsed: number };
 
 const projectOf = (s: State) => s.project ?? (() => { throw notFound("project"); })();
-const runView = (s: State, r: RunState): Run => ({ ...r, hopsUsed: s.hops.filter((h) => h.runId === r.id && h.endedAt !== null).length });
+const runView = (s: State, r: RunState): Run => ({ ...r, hopsUsed: s.hops.filter((h) => h.runId === r.id && h.messageId === null && h.endedAt !== null).length });
 
 async function projectIdOf(db: Db, table: typeof hopsTable | typeof runsTable, id: string, what: string): Promise<string> {
   const [row] = isUuid(id) ? await db.select({ projectId: table.projectId }).from(table).where(eq(table.id, id)) : [];
@@ -25,23 +25,34 @@ async function projectIdOf(db: Db, table: typeof hopsTable | typeof runsTable, i
 }
 
 // ---------- hops ----------
-export async function startHop(db: Db, actor: Actor, projectId: string, input: { cardId: string; workerId: string; runId?: string; claim?: string }): Promise<Hop> {
+// A hop is on a CARD or — v1.4, REQ-013 — on a chat MESSAGE (exactly one of the two). A chat hop belongs to the project's entry worker
+// and answers an operator message nobody has answered yet; it has no "workable" check.
+export async function startHop(db: Db, actor: Actor, projectId: string,
+  input: { cardId?: string; messageId?: string; workerId: string; runId?: string; claim?: string }): Promise<Hop> {
   const id = newId();
+  if ((input.cardId === undefined) === (input.messageId === undefined)) throw new ApiError(400, "validation", "give exactly one of cardId and messageId");
   const { state } = await writeDecided(db, projectId, (s) => {
     const project = projectOf(s);
-    const card = s.cards.find((c) => c.id === input.cardId) ?? (() => { throw notFound("card"); })();
+    const card = input.cardId === undefined ? null : s.cards.find((c) => c.id === input.cardId) ?? (() => { throw notFound("card"); })();
+    const message = input.messageId === undefined ? null : s.chat.find((m) => m.id === input.messageId) ?? (() => { throw notFound("message"); })();
     if (!s.members.includes(input.workerId)) throw new ApiError(400, "not_a_member", `worker ${input.workerId} is not in this project's chain`);
+    if (message) {
+      if (project.entryWorkerId !== input.workerId) throw new ApiError(400, "not_entry_worker", "only the project's entry worker answers the chat");
+      if (message.author !== "operator") throw new ApiError(400, "validation", "a chat hop answers an operator message");
+      if (message.replyHopId !== null) throw new ApiError(409, "already_answered", "that message has already been answered");
+    }
     const run = input.runId === undefined ? null : s.runs.find((r) => r.id === input.runId) ?? (() => { throw notFound("run"); })();
     if (run && run.endedAt !== null) throw new ApiError(409, "already_finished", "that run has ended");
-    if (!isWorkable(s, card)) throw new ApiError(409, "not_workable", "that card is not workable (a question, done, in review, waiting on a card, or its spec changed)");
+    if (card && !isWorkable(s, card)) throw new ApiError(409, "not_workable", "that card is not workable (a question, done, in review, waiting on a card, or its spec changed)");
     if (s.hops.some((h) => h.endedAt === null)) throw new ApiError(409, "hop_running", "this project already has a hop running");
-    if (project.mode === "dispatcher" && project.hopsUsed >= project.hopBudget) {
+    // a chat hop is outside every budget (v1.8, D-055): it is neither checked against one nor counted in one
+    if (!message && project.mode === "dispatcher" && project.hopsUsed >= project.hopBudget) {
       throw new ApiError(409, "no_budget", `the project's hop budget (${project.hopBudget}) is spent`);
     }
-    if (run && s.hops.filter((h) => h.runId === run.id).length >= run.hopBudget) {
+    if (!message && run && s.hops.filter((h) => h.runId === run.id && h.messageId === null).length >= run.hopBudget) {
       throw new ApiError(409, "no_budget", `the run's hop budget (${run.hopBudget}) is spent`);
     }
-    return { type: "hop.started", projectId, actor, at: now(), data: { id, cardId: card.id, workerId: input.workerId, runId: run?.id ?? null, claim: input.claim ?? null } };
+    return { type: "hop.started", projectId, actor, at: now(), data: { id, cardId: card?.id ?? null, messageId: message?.id ?? null, workerId: input.workerId, runId: run?.id ?? null, claim: input.claim ?? null } };
   });
   return state.hops.find((h) => h.id === id)!;
 }

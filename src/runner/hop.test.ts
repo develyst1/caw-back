@@ -1,0 +1,661 @@
+// runHop against the REAL app on PGlite (test/helpers, imported not edited) and a FAKE `claude` child (a stream of recorded lines).
+// What the fake child does through MCP in a real hop (comment, hand_off …) the test does through the API as that worker.
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chainOf3, newCard, setup } from "../../test/helpers/api";
+import { createApi } from "./api";
+import { HOOKS } from "./config";
+import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, runHop } from "./hop";
+import { type Procs, readHopFile } from "./procs";
+import { fakeChild, fixture, hopAware, limitFixture } from "./testkit";
+import { formatReset } from "./thai";
+
+const made: string[] = []; // every temp folder a test makes, removed in afterAll
+const tmp = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix)); made.push(d); return d; };
+afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
+const WS = tmp("caw-hop-ws-");
+mkdirSync(join(WS, ".claude/skills/role-be"), { recursive: true });
+writeFileSync(join(WS, ".claude/skills/role-be/SKILL.md"), "BE craft");
+
+async function world(over: { roots?: string[]; skills?: string[]; hopMaxMs?: number } = {}) {
+  const t0 = await setup();
+  const t = { ...t0, call: hopAware(t0.call) }; // a worker's write names its running hop (contract v1.5)
+  const { project, a } = await chainOf3(t.call);
+  const worker = (await t.call("POST", "/v1/workers", { name: "Blew", role: "BE", skills: over.skills ?? ["role-be"], model: "haiku", effort: "low" })).json;
+  await t.call("POST", `/v1/projects/${project.id}/chain/members`, { workerId: worker.id });
+  const rootA = tmp("caw-hop-root-");
+  const rootB = tmp("caw-hop-root-");
+  const roots = over.roots ?? [rootA, rootB];
+  if (roots.length) { const r = await t.call("PATCH", `/v1/projects/${project.id}/workspace`, { roots }); if (r.status !== 200) throw new Error(JSON.stringify(r.json)); }
+  const card = (await newCard(t.call, project.id, { assigneeId: worker.id })).json;
+  const other = (await newCard(t.call, project.id, { title: "another card", assigneeId: worker.id })).json;
+  const api = createApi("http://caw.test", "runner:inst-1", (url, init) => t.app.fetch(new Request(url, init)));
+  const actor = `worker:${worker.id}`;
+  const hop = await api.startHop(project.id, { cardId: card.id, workerId: worker.id, claim: "inst-1" });
+  const tmpRoot = tmp("caw-hop-tmp-");
+  const spawned: { cmd: string[]; cwd: string }[] = [];
+  let next: () => Child = () => fakeChild({ lines: fixture("ok") });
+  const log: string[] = [];
+  const deps: HopDeps = {
+    api, tmpRoot, log: (l) => log.push(l), cursors: new Map(), settingsFile: "/tmp/settings.json",
+    config: { apiUrl: "http://127.0.0.1:4530", pollMs: 10, hopMaxMs: over.hopMaxMs ?? 5000, claudeBin: "/bin/claude", workspaceRoot: WS, hooks: HOOKS.map((h) => `${WS}/scripts/hooks/${h}`) },
+    spawn: (cmd, opts) => { spawned.push({ cmd, cwd: opts.cwd }); return next(); },
+  };
+  const input = async () => ({ project: (await api.projects()).find((p) => p.id === project.id)!, hop, worker: (await api.workers()).find((w) => w.id === worker.id)!, card: await api.card(card.id) });
+  const finished = async () => (await api.hops(project.id)).find((h) => h.id === hop.id)!;
+  return { ...t, api, deps, input, finished, hop, spawned, log, project, worker, card, other, actor, set: (f: () => Child) => { next = f; }, tmpRoot };
+}
+
+describe("runHop — outcome comes from what the worker wrote to the store", () => {
+  test("a comment through MCP → outcome commented, tokens from the result line, empty note, no leftovers on disk", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); } }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("commented");
+    expect(h.tokensIn).toBe(10 + 13124 + 22383);
+    expect(h.tokensOut).toBe(455);
+    expect(h.note).toBe("");
+    expect(h.endedAt).not.toBeNull();
+    expect(existsSync(join(w.tmpRoot, `hop-${h.id}`))).toBe(false);
+  });
+
+  test("the LAST write by this worker on this card decides: comment then set_status → status", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "c" }, w.actor);
+      await w.call("PATCH", `/v1/cards/${w.card.id}/status`, { status: "review" }, w.actor);
+    } }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("status");
+  });
+
+  test("a hand_off → handed_off", async () => {
+    const w = await world();
+    const target = (await w.call("POST", "/v1/workers", { name: "Next", role: "QA", skills: ["x"] })).json;
+    await w.call("POST", `/v1/projects/${w.project.id}/chain/members`, { workerId: target.id });
+    await w.call("POST", `/v1/projects/${w.project.id}/chain/edges`, { from: w.worker.id, to: target.id });
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      const r = await w.call("POST", `/v1/cards/${w.card.id}/handoff`, { toWorkerId: target.id, text: "over to you" }, w.actor);
+      if (r.status !== 200 && r.status !== 201) throw new Error(JSON.stringify(r.json));
+    } }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("handed_off");
+  });
+
+  test("a question → asked (the event names the card as askingCardId)", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      const r = await w.call("POST", `/v1/cards/${w.card.id}/question`, { text: "which?", proposedDefault: "A", cases: ["x"] }, w.actor);
+      if (r.status !== 201 && r.status !== 200) throw new Error(JSON.stringify(r.json));
+    } }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("asked");
+  });
+
+  test("a write on ANOTHER card, or by ANOTHER actor, is not this hop's result → failed, with the no-result note", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      await w.call("POST", `/v1/cards/${w.other.id}/comments`, { text: "elsewhere" }, w.actor);
+      await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "by the operator" }, "operator");
+    } }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("failed");
+    expect(h.note.startsWith(`${NOTES.noResult} · tools:`)).toBe(true);
+  });
+
+  test("a write from BEFORE the hop started is not counted (events after the start seq only)", async () => {
+    const w = await world();
+    await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "old" }, w.actor);
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("failed");
+  });
+});
+
+describe("runHop — refusals and stops (the child is never started for a refusal)", () => {
+  test("no roots → stopped, the no-folders note, claude not spawned", async () => {
+    const w = await world({ roots: [] });
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect([h.outcome, h.note]).toEqual(["stopped", NOTES.noRoots]);
+    expect(w.spawned).toHaveLength(0);
+  });
+
+  test("a missing skill → stopped, naming it, claude not spawned", async () => {
+    const w = await world({ skills: ["role-be", "ghost-skill"] });
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect([h.outcome, h.note]).toEqual(["stopped", NOTES.skillMissing("ghost-skill")]);
+    expect(w.log.some((l) => l.includes(h.id) && l.includes("ghost-skill"))).toBe(true);    // and the runner's log says it too (the hop row is not the only place)
+    expect(w.spawned).toHaveLength(0);
+  });
+
+  test("a hook block in the stream ends the child at once and the hop is stopped with the worker and the action", async () => {
+    const w = await world();
+    const child = fakeChild({ lines: fixture("push-absolute-hooks").slice(0, -1), hang: true }); // the stream never reaches its result: the runner must not wait for it
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(child.killed).toBe(true);
+    expect(h.outcome).toBe("stopped");
+    expect(h.note).toBe("หยุดไว้: Blew พยายาม Bash: git push origin HEAD ซึ่งไม่อนุญาต · tools: Bash ×1 · turns 1");
+    // the exact block text goes to the runner's log, so an operator can see WHAT stopped it (the note is the short Thai form)
+    expect(w.log.join("\n")).toContain("hook block: PreToolUse:Bash hook error:");
+  });
+
+  test("a permission denial ends it the same way", async () => {
+    const w = await world();
+    const child = fakeChild({ lines: fixture("write-outside").slice(0, -1), hang: true });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(child.killed).toBe(true);
+    expect([h.outcome, h.note.startsWith("หยุดไว้: Blew พยายาม Bash: mkdir -p ")]).toEqual(["stopped", true]);
+  });
+
+  test("a child that outlives RUNNER_HOP_MAX_MS is killed → stopped, timeout note", async () => {
+    const w = await world({ hopMaxMs: 40 });
+    const child = fakeChild({ hang: true });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(child.killed).toBe(true);
+    expect([h.outcome, h.note.startsWith(`${NOTES.timeout} · tools:`)]).toEqual(["stopped", true]);
+  });
+
+  test("when the RUNNER is stopping, a child that dies with it leaves the hop RUNNING — the next runner marks it interrupted (found by the restart e2e)", async () => {
+    const w = await world();
+    const child = fakeChild({ hang: true });
+    w.set(() => child);
+    w.deps.stopping = () => true;
+    const run = runHop(w.deps, await w.input());
+    await new Promise((r) => setTimeout(r, 20));
+    child.kill(); // what the runner's SIGTERM handler does to its children
+    await run;
+    const h = await w.finished();
+    expect([h.endedAt, h.outcome]).toEqual([null, null]);
+    expect(w.log.join("\n")).toContain("runner is stopping");
+  });
+
+  test("a spawn that throws (claude not installed) still ends the hop — failed, with the reason, and it is logged", async () => {
+    const w = await world();
+    w.deps.spawn = () => { throw new Error("ENOENT claude"); };
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("failed");
+    expect(h.note).toContain("ENOENT claude");
+    expect(w.log.join("\n")).toContain("ENOENT claude");
+  });
+});
+
+describe("runHop — robustness (the silent-failure review)", () => {
+  test("a stdout pipe that errors mid-stream: the child is killed — no unguarded worker left running — and the hop FAILS with the reason", async () => {
+    const w = await world();
+    const child = fakeChild({ hang: true, fail: new Error("pipe broke") });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(child.killed).toBe(true);
+    expect([h.outcome, h.note]).toEqual(["failed", "ตัวรันขัดข้อง: pipe broke"]); // the PM's word (REQ-012)
+  });
+
+  test("a child that ignores SIGTERM is SIGKILLed after the grace period, and the hop still ends (stopped, timeout)", async () => {
+    const w = await world({ hopMaxMs: 20 });
+    const child = fakeChild({ hang: true, ignoreTerm: true });
+    w.set(() => child);
+    w.deps.killGraceMs = 30;
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect([h.outcome, h.note.startsWith(`${NOTES.timeout} · tools:`)]).toEqual(["stopped", true]);
+  });
+
+  test("the runner already stopping: claude is never spawned (no child may outlive the runner) and the hop stays running", async () => {
+    const w = await world();
+    w.deps.stopping = () => true;
+    await runHop(w.deps, await w.input());
+    expect(w.spawned).toHaveLength(0);
+    expect((await w.finished()).endedAt).toBeNull();
+  });
+
+  test("an API that clamps its page size below 500 still yields the worker's event (paging reads until an empty page)", async () => {
+    const w = await world();
+    const real = w.deps.api;
+    w.deps.api = { ...real, events: async (p, after) => (await real.events(p, after, 500)).slice(0, 2) };
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      for (const t of ["a", "b", "c"]) await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: t }, w.actor);
+    } }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("commented");
+  });
+
+  test("the exit code is logged on the stopped path too, not only after a normal end", async () => {
+    const w = await world({ hopMaxMs: 20 });
+    w.set(() => fakeChild({ hang: true }));
+    await runHop(w.deps, await w.input());
+    expect(w.log.join("\n")).toContain("claude exit 143");
+  });
+
+  test("lines claude printed that are not JSON are counted in the log", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: ["Error: plain text on stdout", ...fixture("ok")] }));
+    await runHop(w.deps, await w.input());
+    expect(w.log.join("\n")).toContain("1 line(s) were not JSON");
+  });
+});
+
+describe("runHop — the subscription limit (REQ-012 R6)", () => {
+  const RESETS = 1791898200; // the recorded rate_limit_event's resetsAt
+  test("a rate_limit_event that is not `allowed` ends the child at once: the hop is stopped with the Thai reset time, and the limit is handed back", async () => {
+    const w = await world();
+    const now = new Date("2026-10-13T10:00:00Z");
+    w.deps.now = () => now;
+    const child = fakeChild({ lines: limitFixture().slice(0, 14), hang: true }); // the stream stops after the event: the runner must not wait for a result
+    w.set(() => child);
+    const r = await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(child.killed).toBe(true);
+    expect([h.outcome, h.note]).toEqual(["stopped", `ถึงลิมิตการใช้งาน Claude — จะทำต่อได้หลัง ${formatReset(RESETS, now)}`]);
+    expect(r.limit).toEqual({ status: "rejected", resetsAt: RESETS });
+    expect(r.hop.id).toBe(h.id);
+  });
+  test("an `allowed_warning` event does not stop the hop (it is still allowed to work)", async () => {
+    const w = await world();
+    const lines = fixture("ok").map((l) => { const m = JSON.parse(l); if (m.type === "rate_limit_event") m.rate_limit_info.status = "allowed_warning"; return JSON.stringify(m); });
+    w.set(() => fakeChild({ lines, before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "c" }, w.actor); } }));
+    const r = await runHop(w.deps, await w.input());
+    expect(r.limit).toBeNull();
+    expect((await w.finished()).outcome).toBe("commented");
+  });
+  test("a stream with only `allowed` events is no limit", async () => {
+    const w = await world();
+    const r = await runHop(w.deps, await w.input());
+    expect(r.limit).toBeNull();
+  });
+  test("a limit event without a reset time still stops the hop, with the words that need none", async () => {
+    const w = await world();
+    const lines = limitFixture().map((l) => { const m = JSON.parse(l); if (m.type === "rate_limit_event") delete m.rate_limit_info.resetsAt; return JSON.stringify(m); });
+    w.set(() => fakeChild({ lines: lines.slice(0, 14), hang: true }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).note).toBe("ถึงลิมิตการใช้งาน Claude");
+  });
+});
+
+describe("runHop — the exit code, and secrets (Sector's review)", () => {
+  test("a child that exits non-zero after posting: still `commented` (SPEC § 2), and the note says `exit <n>`", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), exitCode: 3, before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "c" }, w.actor); } }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect([h.outcome, h.note]).toEqual(["commented", "exit 3"]);
+  });
+  test("a child that exits non-zero and wrote nothing: failed, the no-result note plus the exit code", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), exitCode: 1 }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).note.startsWith(`${NOTES.noResult} · exit 1 · tools:`)).toBe(true);
+  });
+  test("exit 0 leaves the note empty", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "c" }, w.actor); } }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).note).toBe("");
+  });
+  test("a blocked command that carries a secret: the stored note and the log show it redacted", async () => {
+    const w = await world();
+    const cmd = "git push https://bob:s3cret@example.invalid/r.git token=abc999";
+    const lines = [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: cmd } }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: `PreToolUse:Bash hook error: [/x/block-irreversible.sh]: Blocked (git push) ${cmd}` }] } }),
+    ];
+    w.set(() => fakeChild({ lines, hang: true }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("stopped");
+    for (const text of [h.note, w.log.join("\n")]) { expect(text).not.toContain("s3cret"); expect(text).not.toContain("abc999"); }
+    expect(h.note).toContain("git push https://***@example.invalid/r.git token=***");
+  });
+  test("a runner fault's text is redacted too", async () => {
+    const w = await world();
+    w.deps.spawn = () => { throw new Error("cannot start https://u:pw12345@host/x"); };
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.note).not.toContain("pw12345");
+    expect(w.log.join("\n")).not.toContain("pw12345");
+  });
+  test("the init message and the token breakdown are logged once per hop", async () => {
+    const w = await world();
+    await runHop(w.deps, await w.input());
+    const line = w.log.find((l) => l.includes("init:"))!;
+    expect(line).toContain('"tools":32');
+    expect(line).toContain("cacheCreation 13124");
+  });
+});
+
+describe("what the child may see of the runner's environment (security review F4)", () => {
+  test("only the login/shell basics pass; keys, tokens and cloud credentials do not", () => {
+    const env = childEnv({
+      PATH: "/bin", HOME: "/Users/x", USER: "x", LOGNAME: "x", LANG: "en_US.UTF-8", TMPDIR: "/tmp", SHELL: "/bin/zsh",
+      ANTHROPIC_API_KEY: "k", AWS_SECRET_ACCESS_KEY: "s", GH_TOKEN: "g", DATABASE_URL: "postgres://u:p@h/d", CAW_WORKSPACE_ROOT: "/ws", SSH_AUTH_SOCK: "/s",
+    });
+    expect(env).toEqual({ PATH: "/bin", HOME: "/Users/x", USER: "x", LOGNAME: "x", LANG: "en_US.UTF-8", TMPDIR: "/tmp", SHELL: "/bin/zsh" });
+  });
+  test("a variable that is not set is left out, not set to undefined", () => {
+    expect(Object.keys(childEnv({ PATH: "/bin" }))).toEqual(["PATH"]);
+  });
+  test("runHop starts claude with that environment, not the whole one", async () => {
+    const w = await world();
+    process.env.CAW_TEST_SECRET = "must-not-leak";
+    let seen: Record<string, string | undefined> = {};
+    w.deps.spawn = (cmd, opts) => { seen = opts.env; return fakeChild({ lines: fixture("ok") }); };
+    try { await runHop(w.deps, await w.input()); } finally { delete process.env.CAW_TEST_SECRET; }
+    expect(seen.CAW_TEST_SECRET).toBeUndefined();
+    expect(seen.PATH).toBe(process.env.PATH);
+  });
+});
+
+describe("the hop file and the process group (TASK-C-035, DEF-1)", () => {
+  const stubProcs = (): Procs => ({ inspect: (pid) => ({ lstart: `started-${pid}`, pgid: pid, command: "claude" }), groupAlive: () => false, killGroup: () => {}, sleep: async () => {} });
+  const withDir = async (over: object = {}) => {
+    const w = await world();
+    const hopsDir = tmp("caw-hop-files-");
+    w.deps.hopsDir = hopsDir;
+    w.deps.procs = stubProcs();
+    w.deps.instance = "inst-1";
+    return { w, hopsDir, ...over };
+  };
+
+  test("while the child runs there is a file for it: pid, group, instance, claudeBin, start time — and it is gone once the hop has ended", async () => {
+    const { w, hopsDir } = await withDir();
+    let during: ReturnType<typeof readHopFile> = null;
+    w.set(() => fakeChild({ pid: 4321, lines: fixture("ok"), before: async () => { during = readHopFile(hopsDir, (await w.finished()).id, () => {}); } }));
+    await runHop(w.deps, await w.input());
+    expect(during).toMatchObject({ hopId: (await w.finished()).id, projectId: w.project.id, pid: 4321, pgid: 4321, instance: "inst-1", claudeBin: "/bin/claude", apiUrl: "http://127.0.0.1:4530", lstart: "started-4321" });
+    expect(readHopFile(hopsDir, (await w.finished()).id, () => {})).toBeNull();
+  });
+  test("the file is removed also when the hop ends stopped or failed", async () => {
+    const { w, hopsDir } = await withDir();
+    w.set(() => fakeChild({ pid: 4321, lines: fixture("push-absolute-hooks").slice(0, 15), hang: true }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("stopped");
+    expect(readHopFile(hopsDir, (await w.finished()).id, () => {})).toBeNull();
+  });
+  test("a runner that is stopping LEAVES the file (the next runner reads it)", async () => {
+    const { w, hopsDir } = await withDir();
+    const child = fakeChild({ pid: 4321, hang: true });
+    w.set(() => child);
+    w.deps.stopping = () => child.killed;
+    const run = runHop(w.deps, await w.input());
+    await new Promise((r) => setTimeout(r, 30));
+    child.kill();
+    await run;
+    expect(readHopFile(hopsDir, (await w.finished()).id, () => {})).not.toBeNull();
+  });
+  test("the leader exits but a straggler of its group does not (an MCP server, a Bash child that ignores SIGTERM): the group is SIGKILLed and the file stays until the group is empty", async () => {
+    const { w, hopsDir } = await withDir();
+    let alive = true;
+    const signals: string[] = [];
+    w.deps.procs = { ...stubProcs(), groupAlive: () => alive, killGroup: (g, s) => { signals.push(`${s} -${g}`); if (s === "SIGKILL") alive = false; } };
+    w.deps.killGraceMs = 30;
+    w.set(() => fakeChild({ pid: 4321, lines: fixture("ok") }));
+    await runHop(w.deps, await w.input());
+    expect(signals).toEqual(["SIGKILL -4321"]);
+    expect(readHopFile(hopsDir, (await w.finished()).id, () => {})).toBeNull();       // gone once the group is
+  });
+  test("a group that survives even that keeps its hop file (the next runner\'s sweep finds it) and says so", async () => {
+    const { w, hopsDir } = await withDir();
+    w.deps.procs = { ...stubProcs(), groupAlive: () => true, killGroup: () => {} };
+    w.deps.killGraceMs = 20;
+    w.set(() => fakeChild({ pid: 4321, lines: fixture("ok") }));
+    await runHop(w.deps, await w.input());
+    expect(readHopFile(hopsDir, (await w.finished()).id, () => {})).not.toBeNull();
+    expect(w.log.some((l) => l.includes("still alive") && l.includes("hop file"))).toBe(true);
+  });
+  test("a child without a pid (a fake) writes no file", async () => {
+    const { w, hopsDir } = await withDir();
+    await runHop(w.deps, await w.input());
+    expect(Bun.spawnSync(["ls", hopsDir]).stdout.toString()).toBe("");
+  });
+  test("the real spawner starts the child in its OWN process group (detached) — its pgid is its pid, not the runner\'s", async () => {
+    const { bunSpawn } = await import("./hop");
+    const { realProcs } = await import("./procs");
+    const child = bunSpawn(["sleep", "30"], { cwd: tmpdir(), env: { PATH: process.env.PATH } });
+    try {
+      expect(child.pid).toBeGreaterThan(1);
+      const info = realProcs.inspect(child.pid!)!;
+      expect(info.pgid).toBe(child.pid!);
+      expect(info.pgid).not.toBe(realProcs.inspect(process.pid)!.pgid);
+    } finally { child.kill(); await child.exited; }
+    expect(realProcs.groupAlive(child.pid!)).toBe(false);                      // kill() stopped the group, not just the pid
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+describe("a chat hop: the entry worker answers an operator message (TASK-C-034)", () => {
+  /** world() with the worker made the project's ENTRY worker, an operator message, and a chat hop on it (the card hop world() starts is finished first) */
+  async function chatWorld() {
+    const w = await world();
+    await w.api.finishHop(w.hop.id, { outcome: "commented" });
+    await w.call("PUT", `/v1/projects/${w.project.id}/chain/entry`, { workerId: w.worker.id });
+    const msg = (await w.call("POST", `/v1/projects/${w.project.id}/chat`, { text: "แก้ขั้นอนุมัติห้องใหญ่" })).json;
+    const chatHop = await w.api.startHop(w.project.id, { messageId: msg.id, workerId: w.worker.id, claim: "inst-1" });
+    const H = { "x-caw-hop": chatHop.id };
+    const P = `/v1/projects/${w.project.id}`;
+    const as = (method: string, path: string, body?: unknown) => w.call(method, path, body, w.actor, H);
+    const input = async () => ({ project: (await w.api.projects()).find((p) => p.id === w.project.id)!, hop: chatHop, worker: (await w.api.workers()).find((x) => x.id === w.worker.id)! });
+    const finishedChat = async () => (await w.api.hops(w.project.id)).find((h) => h.id === chatHop.id)!;
+    // what the worker does through the five MCP tools, as API calls
+    const locate = (request = "แก้ขั้นอนุมัติห้องใหญ่") => as("POST", `${P}/locate`, { request });
+    const propose = async () => (await as("POST", `${P}/proposals`, { messageId: msg.id, items: [{ title: "ทำหน้าอนุมัติ", todo: "ตาม STEP-004", anchor: { key: "STEP-004", version: 1 }, workerId: w.worker.id, dependsOn: [], hops: 2 }] })).json;
+    const amend = async () => (await as("POST", `${P}/amendments`, { request: "ขอเพิ่มเรื่องจ่ายเงินเดือน" })).json;
+    const reply = (extra: object = {}) => as("POST", `/v1/chat/${msg.id}/reply`, { text: "รับทราบ", ...extra });
+    return { ...w, msg, chatHop, input, finishedChat, locate, propose, amend, reply };
+  }
+  const run = async (c: Awaited<ReturnType<typeof chatWorld>>, act: () => Promise<void>) => {
+    c.set(() => fakeChild({ lines: fixture("ok"), before: act }));
+    await runHop(c.deps, await c.input());
+    return c.finishedChat();
+  };
+
+  test("a reply alone → replied", async () => {
+    const c = await chatWorld();
+    const h = await run(c, async () => { await c.reply(); });
+    expect([h.outcome, h.note]).toEqual(["replied", ""]);
+  });
+  test("a proposal and a reply → proposed", async () => {
+    const c = await chatWorld();
+    const h = await run(c, async () => { await c.locate(); const p = await c.propose(); await c.reply({ proposalId: p.id, text: "1 งาน ใช้ประมาณ 2 ก้าว" }); });
+    expect(h.outcome).toBe("proposed");
+  });
+  test("an amendment and a reply → amended", async () => {
+    const c = await chatWorld();
+    const h = await run(c, async () => { await c.locate("ระบบจ่ายเงินเดือน"); const a = await c.amend(); await c.reply({ amendment: { blueprintMessageId: a.id ?? "bp-msg-1" } }); });
+    expect(h.outcome).toBe("amended");
+  });
+  test("both → proposed_and_amended", async () => {
+    const c = await chatWorld();
+    const h = await run(c, async () => { await c.locate(); const p = await c.propose(); const a = await c.amend(); await c.reply({ proposalId: p.id, amendment: { blueprintMessageId: a.id ?? "bp-msg-1" } }); });
+    expect(h.outcome).toBe("proposed_and_amended");
+  });
+  test("no reply → failed, with the no-result note (even if a proposal was made — the operator got no answer)", async () => {
+    const c = await chatWorld();
+    const h = await run(c, async () => { await c.locate(); await c.propose(); });
+    expect([h.outcome, h.note]).toEqual(["failed", `${NOTES.noResult} · tools: locate ×0, reply ×0 · turns 1`]);
+  });
+  test("the exit code and tokens are recorded exactly as for a card hop", async () => {
+    const c = await chatWorld();
+    c.set(() => fakeChild({ lines: fixture("ok"), exitCode: 2, before: async () => { await c.reply(); } }));
+    await runHop(c.deps, await c.input());
+    const h = await c.finishedChat();
+    expect([h.outcome, h.note, h.tokensIn]).toEqual(["replied", "exit 2", 10 + 13124 + 22383]);
+  });
+  test("a follow-up after the worker's question pack: the runner reads the thread and the prompt carries the questions and the ORIGINAL request (TASK-C-036)", async () => {
+    const c = await chatWorld();
+    await run(c, async () => { await c.reply({ text: "ขอถาม", questions: [{ text: "ใช้สีไหน", proposedDefault: "ตามเดิม", cases: ["ใช่", "ไม่ใช่"] }] }); });
+    const m2 = (await c.call("POST", `/v1/projects/${c.project.id}/chat`, { text: "1. ตามนั้น" })).json;
+    const hop2 = await c.api.startHop(c.project.id, { messageId: m2.id, workerId: c.worker.id, claim: "inst-1" });
+    c.set(() => fakeChild({ lines: fixture("ok") }));
+    await runHop(c.deps, { project: (await c.input()).project, hop: hop2, worker: (await c.input()).worker });
+    const prompt = c.spawned[c.spawned.length - 1]!.cmd[2]!;
+    expect(prompt).toContain("answers your questions");
+    expect(prompt).toContain("ใช้สีไหน");
+    expect(prompt).toContain("แก้ขั้นอนุมัติห้องใหญ่"); // the operator's first message
+  });
+  test("a first message gets the plain prompt; a chat that cannot be read does not fail the hop", async () => {
+    const c = await chatWorld();
+    const plain = async () => { await run(c, async () => { await c.reply(); }); return c.spawned[c.spawned.length - 1]!.cmd[2]!; };
+    expect(await plain()).not.toContain("answers your questions");
+    const c2 = await chatWorld();
+    c2.deps.api = { ...c2.deps.api, chatMessages: async () => { throw new Error("boom"); } };
+    const h = await run(c2, async () => { await c2.reply(); });
+    expect(h.outcome).toBe("replied");
+    expect(c2.log.some((l) => l.includes("could not read the chat"))).toBe(true);
+  });
+  test("the chat hop is started with no built-in tools (--tools empty)", async () => {
+    const c = await chatWorld();
+    await run(c, async () => { await c.reply(); });
+    const cmd = c.spawned[0]!.cmd;
+    expect(cmd.slice(cmd.indexOf("--tools"), cmd.indexOf("--tools") + 2)).toEqual(["--tools", ""]);
+  });
+  test("it runs in the hop's OWN private folder, never in the project's repo, and with no --add-dir", async () => {
+    const c = await chatWorld();
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.reply(); } }));
+    await runHop(c.deps, await c.input());
+    const { cmd, cwd } = c.spawned[0]!;
+    const roots = (await c.input()).project.workspace.roots;
+    expect(roots.includes(cwd)).toBe(false);
+    expect(cwd).toContain(`hop-${c.chatHop.id}`);
+    expect(cmd).not.toContain("--add-dir");
+  });
+  test("it works with NO workspace roots (a card hop is refused without them; the chat needs no folder)", async () => {
+    const c = await chatWorld();
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.reply(); } }));
+    const inp = await c.input();
+    await runHop(c.deps, { ...inp, project: { ...inp.project, workspace: { roots: [] } } });
+    expect((await c.finishedChat()).outcome).toBe("replied");
+    expect(c.spawned).toHaveLength(1);
+  });
+  test("the prompt is the CHAT template: the message and the project id, chat_context first", async () => {
+    const c = await chatWorld();
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.reply(); } }));
+    await runHop(c.deps, await c.input());
+    expect(c.spawned[0]!.cmd[2]).toContain(c.msg.id);
+    expect(c.spawned[0]!.cmd[2]).toContain(c.project.id);
+    expect(c.spawned[0]!.cmd[2]).toContain("chat_context");
+  });
+  test("a limit or a block on a chat hop ends it like any hop (no run to close)", async () => {
+    const c = await chatWorld();
+    c.set(() => fakeChild({ lines: limitFixture().slice(0, 14), hang: true }));
+    const r = await runHop(c.deps, await c.input());
+    expect([(await c.finishedChat()).outcome, r.limit?.status]).toEqual(["stopped", "rejected"]);
+  });
+});
+
+describe("what claude is started with (SPEC-C-003 § 2)", () => {
+  test("cwd = the first root and --add-dir for the rest; the model, effort, settings, strict MCP, no web, the skills file", async () => {
+    const w = await world();
+    await runHop(w.deps, await w.input());
+    const { cmd, cwd } = w.spawned[0]!;
+    const roots = (await w.input()).project.workspace.roots;
+    expect(cwd).toBe(roots[0]!);
+    expect(cmd[0]).toBe("/bin/claude");
+    const at = (flag: string) => cmd.indexOf(flag);
+    expect(cmd[1]).toBe("-p");
+    expect(cmd[2]).toContain(w.card.id);
+    expect(cmd.slice(at("--model"), at("--model") + 2)).toEqual(["--model", "haiku"]);
+    expect(cmd.slice(at("--effort"), at("--effort") + 2)).toEqual(["--effort", "low"]);
+    expect(cmd.slice(at("--permission-mode"), at("--permission-mode") + 2)).toEqual(["--permission-mode", "acceptEdits"]);
+    expect(cmd.slice(at("--output-format"), at("--output-format") + 2)).toEqual(["--output-format", "stream-json"]);
+    expect(cmd).toContain("--verbose");
+    expect(cmd).toContain("--strict-mcp-config");
+    expect(cmd).toContain("--no-session-persistence");
+    expect(cmd.slice(at("--settings"), at("--settings") + 2)).toEqual(["--settings", "/tmp/settings.json"]);
+    expect(cmd.slice(at("--disallowedTools"), at("--disallowedTools") + 4)).toEqual(["--disallowedTools", "WebFetch", "WebSearch", cmd[at("--disallowedTools") + 3]!]);
+    expect(cmd[at("--disallowedTools") + 3]!.startsWith("--")).toBe(true); // a variadic flag must be followed by a flag, or it swallows the next argument
+    expect(cmd.slice(at("--add-dir"), at("--add-dir") + 2)).toEqual(["--add-dir", roots[1]!]);
+    expect(cmd).not.toContain("--bare"); // --bare drops the subscription login (TASK-C-029)
+    expect(cmd.slice(at("--setting-sources"), at("--setting-sources") + 2)).toEqual(["--setting-sources", "project"]); // R-5: the operator's ~/.claude is not loaded
+    expect(cmd.indexOf("--append-system-prompt-file")).toBeGreaterThan(-1);
+  });
+});
+
+describe("buildArgs / buildMcpConfig", () => {
+  const worker = { id: "w", name: "N", role: "BE", skills: [], model: "sonnet" as const, effort: "high" as const };
+  test("a worker with no skills passes no --append-system-prompt-file", () => {
+    const a = buildArgs({ prompt: "p", worker, roots: ["/r"], settingsFile: "/s", mcpFile: "/m", skillsFile: null });
+    expect(a).not.toContain("--append-system-prompt-file");
+    expect(a).not.toContain("--add-dir");
+    expect(a.slice(0, 2)).toEqual(["-p", "p"]);
+  });
+  test("a CHAT hop gets no built-in tool at all (--tools empty) and the coding tools denied by name; a card hop is unchanged (TASK-C-036 (c))", () => {
+    const chat = buildArgs({ prompt: "p", worker, roots: [], settingsFile: "/s", mcpFile: "/m", skillsFile: null, chat: true });
+    const card = buildArgs({ prompt: "p", worker, roots: ["/r"], settingsFile: "/s", mcpFile: "/m", skillsFile: null });
+    const t = chat.indexOf("--tools");
+    expect(chat.slice(t, t + 2)).toEqual(["--tools", ""]);
+    expect(chat[t + 2]!.startsWith("--")).toBe(true); // variadic: followed by a flag, never by the next positional
+    const d = chat.indexOf("--disallowedTools");
+    const denied = chat.slice(d + 1, d + 10);
+    for (const tool of ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "WebFetch", "WebSearch"]) expect(denied).toContain(tool);
+    expect(chat[d + 10]!.startsWith("--")).toBe(true);
+    expect(card).not.toContain("--tools");
+    const cd = card.indexOf("--disallowedTools");
+    expect(card.slice(cd + 1, cd + 3)).toEqual(["WebFetch", "WebSearch"]);
+  });
+  test("the MCP config holds ONLY CAW's server, as this worker, by absolute path", () => {
+    const cfg: any = buildMcpConfig("http://127.0.0.1:4530", "w-1", "hop-9");
+    expect(Object.keys(cfg.mcpServers)).toEqual(["caw"]);
+    const s = cfg.mcpServers.caw;
+    expect(s.env).toEqual({ CAW_API_URL: "http://127.0.0.1:4530", CAW_WORKER_ID: "w-1", CAW_HOP_ID: "hop-9" }); // contract v1.5: a worker write names its running hop
+    expect(s.args[0]).toBe("run");
+    expect(s.args[1].startsWith("/")).toBe(true);
+    expect(s.args[1].endsWith("src/mcp/server.ts")).toBe(true);
+    expect(existsSync(s.args[1])).toBe(true);
+  });
+});
+
+describe("the per-hop trace and the tool summary (TASK-C-036)", () => {
+  const toolLines = [
+    JSON.stringify({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "t1", name: "mcp__caw__chat_context", input: {} }] } }),
+    JSON.stringify({ type: "assistant", message: { id: "m2", content: [{ type: "tool_use", id: "t2", name: "mcp__caw__chat_context", input: {} }] } }),
+  ];
+  test("the stream is kept as <hopId>.jsonl, redacted, and its path is logged", async () => {
+    const w = await world();
+    const traceDir = tmp("caw-trace-");
+    w.set(() => fakeChild({ lines: [...fixture("ok"), '{"x":"https://u:hunter2@host/r"}'], before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); } }));
+    await runHop({ ...w.deps, traceDir }, await w.input());
+    const text = readFileSync(join(traceDir, `${w.hop.id}.jsonl`), "utf8");
+    expect(text).toContain('"type":"system"');
+    expect(text).not.toContain("hunter2");
+    expect(w.log.some((l) => l.includes(`trace ${join(traceDir, `${w.hop.id}.jsonl`)}`))).toBe(true);
+  });
+  test("a hop that is stopped (killed on a block) still leaves its trace", async () => {
+    const w = await world();
+    const traceDir = tmp("caw-trace-");
+    w.set(() => fakeChild({ lines: fixture("push-absolute-hooks").slice(0, -1), hang: true }));
+    await runHop({ ...w.deps, traceDir }, await w.input());
+    expect((await w.finished()).outcome).toBe("stopped");
+    expect(existsSync(join(traceDir, `${w.hop.id}.jsonl`))).toBe(true);
+  });
+  test("no traceDir, no trace", async () => {
+    const w = await world();
+    await runHop(w.deps, await w.input());
+    expect(w.log.some((l) => l.includes(" trace "))).toBe(false);
+  });
+  test("a failed card hop's note carries the tool summary after the existing note", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: [...toolLines, ...fixture("ok")] }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("failed");
+    expect(h.note).toBe(`${NOTES.noResult} · tools: chat_context ×2 · turns 3`);
+  });
+  test("a successful hop's note stays empty — the summary is for failed and stopped only", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: [...toolLines, ...fixture("ok")], before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "d" }, w.actor); } }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).note).toBe("");
+  });
+});

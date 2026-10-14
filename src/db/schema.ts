@@ -91,9 +91,10 @@ export const notes = caw.table("notes", {
   text: text("text").notNull(),
   fromWorkerId: uuid("from_worker_id").references(() => workers.id),
   toWorkerId: uuid("to_worker_id").references(() => workers.id),
+  allowed: uuid("allowed").array(), // handoff_refused only (v1.3): who the sender could have handed to; null for every other type
   at: at("at").notNull(),
 }, (t) => [
-  check("notes_type", sql`${t.type} in ('comment','handoff')`),
+  check("notes_type", sql`${t.type} in ('comment','handoff','handoff_refused')`),
   check("notes_text_length", sql`char_length(${t.text}) between 1 and 8000`),
 ]);
 
@@ -115,12 +116,46 @@ export const runs = caw.table("runs", {
   check("runs_report_length", sql`${t.report} is null or char_length(${t.report}) <= 20000`),
 ]);
 
+// Chat (v1.4, REQ-013): the operator's messages and the entry worker's replies. `replyTo`, `replyHopId` and `proposalId` carry no
+// foreign key (hops and proposals point back at messages); the reducer keeps them consistent.
+export const chatMessages = caw.table("chat_messages", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id),
+  author: text("author").notNull(), // 'operator' | 'worker:<id>'
+  text: text("text").notNull(),
+  replyTo: uuid("reply_to"),
+  replyHopId: uuid("reply_hop_id"), // set when a hop answers this (operator) message
+  questions: jsonb("questions"), // null | [{ text, proposedDefault, cases[] }]
+  proposalId: uuid("proposal_id"),
+  amendment: jsonb("amendment"), // null | { blueprintMessageId, link }
+  retryRequestedAt: at("retry_requested_at"), // v1.9: the operator asked for a retry; cleared when a hop starts on the message
+  at: at("at").notNull(),
+}, (t) => [
+  check("chat_messages_text_length", sql`char_length(${t.text}) between 1 and 4000`),
+]);
+
+// A proposal of cards from the entry worker's chat hop (v1.4): items are CAW's own words + anchors { key, version } — no spec text.
+export const proposals = caw.table("proposals", {
+  id: uuid("id").primaryKey(),
+  projectId: uuid("project_id").notNull().references(() => projects.id),
+  messageId: uuid("message_id").notNull().references(() => chatMessages.id),
+  version: integer("version").notNull(),
+  items: jsonb("items").notNull(),
+  status: text("status").notNull(),
+  cardIds: uuid("card_ids").array(),
+  createdAt: at("created_at").notNull(),
+}, (t) => [
+  check("proposals_status", sql`${t.status} in ('open','accepted','superseded')`),
+]);
+
 export const hops = caw.table("hops", {
   id: uuid("id").primaryKey(),
   projectId: uuid("project_id").notNull().references(() => projects.id),
   runId: uuid("run_id").references(() => runs.id), // null = a manual hop (v1.1)
   claimedBy: text("claimed_by"), // the runner instance (v1.1)
-  cardId: uuid("card_id").notNull().references(() => cards.id),
+  cardId: uuid("card_id").references(() => cards.id), // a card hop; null for a chat hop (v1.4)
+  messageId: uuid("message_id").references(() => chatMessages.id), // a chat hop; null for a card hop (v1.4)
+  locatedKeys: text("located_keys").array(), // union of the keys of every locate in this hop (v1.4 / v1.6); null until the first
   workerId: uuid("worker_id").notNull().references(() => workers.id),
   startedAt: at("started_at").notNull(),
   endedAt: at("ended_at"),
@@ -129,7 +164,8 @@ export const hops = caw.table("hops", {
   tokensOut: integer("tokens_out"),
   note: text("note").notNull().default(""),
 }, (t) => [
-  check("hops_outcome", sql`${t.outcome} is null or ${t.outcome} in ('commented','handed_off','status','asked','failed','stopped','interrupted')`),
+  check("hops_outcome", sql`${t.outcome} is null or ${t.outcome} in ('commented','handed_off','status','asked','failed','stopped','interrupted','replied','proposed','amended','proposed_and_amended')`),
+  check("hops_card_xor_message", sql`(${t.cardId} is null) <> (${t.messageId} is null)`),
   check("hops_note_length", sql`char_length(${t.note}) <= 2000`),
 ]);
 

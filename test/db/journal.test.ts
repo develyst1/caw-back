@@ -7,9 +7,10 @@ import { sql } from "drizzle-orm";
 import { MIGRATIONS } from "../../src/db/migrations-config";
 import { testDb } from "../helpers/db";
 
+const JOURNAL_ENTRIES = (JSON.parse(readFileSync(new URL("../../src/db/migrations/meta/_journal.json", import.meta.url), "utf8")) as { entries: unknown[] }).entries.length; // 3 since v1.3 (0002)
 const rowsOf = async <T>(db: Awaited<ReturnType<typeof testDb>>, q: ReturnType<typeof sql>) => ((await db.execute(q)) as unknown as { rows: T[] }).rows;
 
-test("after migrate: the journal is caw.__caw_migrations (2 rows); schema `drizzle` and `public` hold nothing of ours", async () => {
+test("after migrate: the journal is caw.__caw_migrations (one row per migration); schema `drizzle` and `public` hold nothing of ours", async () => {
   const db = await testDb();
   const tables = await rowsOf<{ table_schema: string; table_name: string }>(db, sql`select table_schema, table_name from information_schema.tables where table_schema not in ('pg_catalog','information_schema') order by 1, 2`);
   const bySchema = (s: string) => tables.filter((t) => t.table_schema === s).map((t) => t.table_name);
@@ -17,7 +18,7 @@ test("after migrate: the journal is caw.__caw_migrations (2 rows); schema `drizz
   expect(bySchema("public")).toEqual([]);
   expect(bySchema("caw")).toContain("__caw_migrations");
   expect(Object.keys(tables.reduce((m, t) => ({ ...m, [t.table_schema]: 1 }), {}))).toEqual(["caw"]); // nothing outside `caw`
-  expect(await rowsOf(db, sql`select 1 from caw.__caw_migrations`)).toHaveLength(2);
+  expect(await rowsOf(db, sql`select 1 from caw.__caw_migrations`)).toHaveLength(JOURNAL_ENTRIES);
 });
 
 test("the journal's name lives in one place, and both migrate call sites (the app's PGlite and `bun run db:migrate`) use it", () => {

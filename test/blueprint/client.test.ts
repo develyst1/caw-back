@@ -1,7 +1,7 @@
 // The Blueprint client (SPEC-A-008 § What I read — the seam CAW calls), against a fake Blueprint serving recorded responses.
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { BlueprintUnreachable, createBlueprint } from "../../src/blueprint/client";
+import { BlueprintUnreachable, createBlueprint, defaultWebUrl } from "../../src/blueprint/client";
 import { BP_NAME, BP_PROJECT, fakeBlueprint } from "../helpers/fake-blueprint";
 
 const fix = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/blueprint/${name}.json`, import.meta.url), "utf8"));
@@ -50,4 +50,24 @@ test("the default address is BLUEPRINT_URL, then http://127.0.0.1:4200 when it i
   expect(defaultBlueprintUrl({ BLUEPRINT_URL: "http://example.test:1" })).toBe("http://example.test:1");
   expect(defaultBlueprintUrl({ BLUEPRINT_URL: "" })).toBe("http://127.0.0.1:4200");
   expect(defaultBlueprintUrl({})).toBe("http://127.0.0.1:4200");
+});
+
+test("locate and amend: Blueprint's answers as recorded; its 400 on amend comes back as a refusal, any other non-answer is blueprint_unreachable (v1.4)", async () => {
+  const f = fake();
+  const bp = createBlueprint(f.url);
+  expect(await bp.locate(BP_PROJECT, "ห้องใหญ่ต้องอนุมัติ")).toEqual(fix("locate-room"));
+  expect(await bp.locate(BP_PROJECT, "xyzzy plugh")).toEqual(fix("locate-none"));
+  expect(f.mode.bodies.at(-1)).toEqual({ path: `/v1/projects/${BP_PROJECT}/locate`, body: { request: "xyzzy plugh" } });
+  expect(await bp.amend(BP_PROJECT, { from: "caw:p:h", request: "ขอ", about: ["STEP-004"] })).toEqual({ ok: true, message: fix("amendment-201") });
+  expect(await bp.amend(BP_PROJECT, { from: "caw:p:h", request: "ขอ", about: ["NOPE-999"] })).toEqual({ ok: false, error: fix("amendment-400-about").error });
+  await expect(bp.locate("00000000-0000-0000-0000-000000000099", "x")).rejects.toBeInstanceOf(BlueprintUnreachable); // a 404 is no Located
+  f.mode.down = true;
+  await expect(bp.locate(BP_PROJECT, "x")).rejects.toBeInstanceOf(BlueprintUnreachable);
+  await expect(bp.amend(BP_PROJECT, { from: "caw:p:h", request: "x" })).rejects.toBeInstanceOf(BlueprintUnreachable);
+});
+
+test("BLUEPRINT_WEB_URL: the env, else http://127.0.0.1:3100; a trailing slash is dropped", () => {
+  expect(defaultWebUrl({ BLUEPRINT_WEB_URL: "http://example.test:9/" })).toBe("http://example.test:9");
+  expect(defaultWebUrl({ BLUEPRINT_WEB_URL: "" })).toBe("http://127.0.0.1:3100");
+  expect(defaultWebUrl({})).toBe("http://127.0.0.1:3100");
 });

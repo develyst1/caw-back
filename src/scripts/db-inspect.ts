@@ -51,13 +51,14 @@ export async function readState(q: Client["exec"]): Promise<Inspection> {
 function verdictOf(tables: string[], caw: Inspection["cawJournal"], counts: Inspection["counts"], drizzle: Inspection["drizzleJournal"]): Verdict {
   const ours = drizzle.rows.filter((r) => (CAW_CREATED_AT as readonly string[]).includes(r.createdAt));
   const noData = Object.values(counts).every((n) => !n);
-  const cawHasBoth = caw.createdAt.length === 2 && CAW_CREATED_AT.every((c) => caw.createdAt.includes(c));
+  // both original rows, and any later migration (0002 …) on top of them
+  const cawHasBoth = CAW_CREATED_AT.every((c) => caw.createdAt.includes(c));
   if (tables.length === 0) return ours.length === 0 && caw.createdAt.length === 0 ? "CLEAN" : "CASE C";
   // Case A: both of CAW's rows are in Blueprint's journal (exactly once each) and CAW's own journal is absent or empty
   if (ours.length === 2 && new Set(ours.map((r) => r.createdAt)).size === 2 && caw.createdAt.length === 0) return "CASE A";
   // Case B: tables of unknown origin — in no journal — and no data
   if (ours.length === 0 && caw.createdAt.length === 0 && noData) return "CASE B";
-  // Healthy: CAW's journal holds both, Blueprint's holds none of ours (the study never calls this B)
+  // Healthy: CAW's journal holds both originals (and any newer ones), Blueprint's holds none of ours (the study never calls this B)
   if (ours.length === 0 && cawHasBoth) return "MIGRATED";
   return "CASE C";
 }
@@ -67,7 +68,7 @@ export const DB_INSPECT_VERDICTS: Record<Verdict, string> = {
   "CASE B": "tables of unknown origin, no data, in no journal → the study's Case B (DROP SCHEMA caw) — send this output to the PM first",
   "CASE C": "anything else — STOP; send this output to the PM",
   CLEAN: "no caw tables at all → just `bun run db:migrate`",
-  MIGRATED: "already migrated: caw.__caw_migrations holds both rows, Blueprint's journal none of ours → nothing to do",
+  MIGRATED: "already migrated: caw.__caw_migrations holds CAW's rows, Blueprint's journal none of ours → nothing to do (a newer migration pending? run bun run db:migrate)",
 };
 
 export function render(r: Inspection): string[] {

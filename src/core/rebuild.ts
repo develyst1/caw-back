@@ -12,8 +12,9 @@ import { loadState } from "./state";
 const HANDLED = new Set<string>([
   "project.created", "worker.created", "worker.combined", "chain.member_added", "chain.member_removed", "chain.edge_added", "chain.edge_removed",
   "chain.entry_set", "card.created", "card.status_set", "card.assigned", "card.handed_off", "card.commented", "card.question_opened",
-  "card.question_answered", "card.spec_change_cleared", "card.spec_changed", "project.mode_set", "project.workspace_set",
+  "card.question_answered", "card.spec_change_cleared", "card.handoff_refused", "card.spec_changed", "project.mode_set", "project.workspace_set",
   "run.started", "run.finished", "hop.started", "hop.claimed", "hop.finished",
+  "chat.posted", "chat.replied", "hop.located", "proposal.made", "proposal.accepted", "chat.retry_requested",
 ] satisfies (typeof EVENT_TYPES)[number][]);
 
 export async function rebuild(db: Db, projectId: string, each?: (event: CawEvent) => void): Promise<State> {

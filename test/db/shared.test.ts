@@ -1,11 +1,13 @@
 // The test database is ONE PGlite for the whole run, emptied before each test (test/helpers/db.ts). That is only safe if
 // "emptied" is true for every table and for the event sequence: a test must never see what an earlier one wrote.
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { sql } from "drizzle-orm";
 import { writeEvent } from "../../src/core/write";
 import { events, projects } from "../../src/db/schema";
 import { testDb } from "../helpers/db";
 
+const JOURNAL_ENTRIES = (JSON.parse(readFileSync(new URL("../../src/db/migrations/meta/_journal.json", import.meta.url), "utf8")) as { entries: unknown[] }).entries.length;
 const ID = "11111111-1111-4111-8111-111111111111";
 
 test("testDb() hands every test an empty database (all caw tables, events' sequence from 1) — and it is the same instance", async () => {
@@ -21,5 +23,5 @@ test("testDb() hands every test an empty database (all caw tables, events' seque
   const again = await writeEvent(second, { type: "project.created", projectId: ID, actor: "operator", at: "2026-10-13T08:00:00.000Z", data: { id: ID, name: "y", blueprintProjectId: "bp", version: 1 } });
   expect(again.seq).toBe(1); // identity restarted
   const counts = ((await second.execute(sql`select count(*)::int as n from caw.__caw_migrations`)) as unknown as { rows: { n: number }[] }).rows[0]!.n;
-  expect(counts).toBe(2); // the migrations journal is not emptied
+  expect(counts).toBe(JOURNAL_ENTRIES); // the migrations journal is not emptied
 });

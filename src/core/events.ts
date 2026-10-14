@@ -4,21 +4,29 @@ export const EVENT_TYPES = [
   "project.created", "worker.created", "worker.combined",
   "chain.member_added", "chain.member_removed", "chain.edge_added", "chain.edge_removed", "chain.entry_set",
   "card.created", "card.dependency_added", "card.status_set", "card.assigned", "card.handed_off", "card.commented",
-  "card.question_opened", "card.question_answered", "card.spec_changed", "card.spec_change_cleared",
+  "card.question_opened", "card.question_answered", "card.spec_changed", "card.spec_change_cleared", "card.handoff_refused",
   "project.mode_set", "project.budget_set", "project.workspace_set",
   "run.started", "run.finished",
   "hop.claimed", "hop.started", "hop.finished",
+  // v1.4 (REQ-013): chat, the locate keys kept on a chat hop, proposals. `proposal.superseded` stays reserved: a new proposal supersedes
+  // the older open ones of its message INSIDE `proposal.made` ("in the same event").
+  "chat.posted", "chat.replied", "hop.located", "proposal.made", "proposal.accepted", "proposal.superseded",
+  // v1.9 (D-057): the operator asks for a failed chat step to be tried again
+  "chat.retry_requested",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
-/** `operator` or `worker:<workerId>` (SPEC § Identity). */
-export type Actor = "operator" | `worker:${string}`;
+/** `operator`, `worker:<workerId>`, or — contract v1.2, four routes only — `runner:<name>` (SPEC § Identity, § v1.2). */
+export type Actor = "operator" | `worker:${string}` | `runner:${string}`;
 
 type Header = { projectId: string | null; actor: string; at: string /* ISO-8601, server-made */ };
 type WorkerData = { id: string; name: string; role: string; skills: string[]; model: string; effort: string };
 export type CardStatus = "todo" | "doing" | "review" | "done" | "stuck";
 export type Mode = "manual" | "dispatcher";
-export type HopOutcome = "commented" | "handed_off" | "status" | "asked" | "failed" | "stopped" | "interrupted";
+export type HopOutcome = "commented" | "handed_off" | "status" | "asked" | "failed" | "stopped" | "interrupted" | "replied" | "proposed" | "amended" | "proposed_and_amended";
+export type ChatQuestion = { text: string; proposedDefault: string; cases: string[] };
+/** One card a proposal would create: CAW's own words + an anchor { key, version } — no spec text. `dependsOn` = indexes into the proposal's items. */
+export type ProposalItem = { title: string; todo: string; anchor: { key: string; version: number }; workerId: string; dependsOn: number[]; hops: number };
 export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_twice" | "limit_reached" | "operator_stopped" | "error";
 
 // A member of this union arrives with the TASK that writes it (A-071: the project · A-072: workers, chain, cards ·
@@ -39,6 +47,8 @@ export type CawEvent = Header & (
   | { type: "card.assigned"; data: { cardId: string; workerId: string } }
   | { type: "card.handed_off"; data: { cardId: string; fromWorkerId: string | null; toWorkerId: string; noteId: string; text: string } }
   | { type: "card.commented"; data: { cardId: string; noteId: string; text: string } }
+  // v1.3 (D-051): a hand-off refused 409 chain_broken — recorded, the card itself untouched
+  | { type: "card.handoff_refused"; data: { cardId: string; noteId: string; from: string | null; to: string; allowed: string[]; text: string } }
   | { type: "card.question_opened"; data: { askingCardId: string; id: string; number: number; text: string; proposedDefault: string; cases: string[] } }
   | { type: "card.question_answered"; data: { cardId: string; answer: string } }
   | { type: "card.spec_change_cleared"; data: { cardId: string } }
@@ -48,7 +58,13 @@ export type CawEvent = Header & (
   | { type: "project.workspace_set"; data: { roots: string[] } }
   | { type: "run.started"; data: { id: string; mode: Mode; hopBudget: number } }
   | { type: "run.finished"; data: { runId: string; stopReason: StopReason; report: string } }
-  | { type: "hop.started"; data: { id: string; cardId: string; workerId: string; runId: string | null; claim: string | null } }
+  | { type: "hop.started"; data: { id: string; cardId: string | null; messageId: string | null; workerId: string; runId: string | null; claim: string | null } }
+  | { type: "hop.located"; data: { hopId: string; keys: string[] } }
+  | { type: "chat.posted"; data: { id: string; text: string } }
+  | { type: "chat.replied"; data: { id: string; messageId: string; hopId: string; text: string; questions: ChatQuestion[] | null; proposalId: string | null; amendment: { blueprintMessageId: string; link: string } | null } }
+  | { type: "chat.retry_requested"; data: { messageId: string } }
+  | { type: "proposal.made"; data: { id: string; messageId: string; version: number; items: ProposalItem[]; supersedes: string[] } }
+  | { type: "proposal.accepted"; data: { proposalId: string; cardIds: string[] } }
   | { type: "hop.claimed"; data: { hopId: string; claim: string } }
   | { type: "hop.finished"; data: { hopId: string; outcome: HopOutcome; tokensIn: number | null; tokensOut: number | null; note: string } }
 );
