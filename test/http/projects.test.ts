@@ -28,7 +28,7 @@ test("an unknown worker id → 400 unknown_worker; a known worker writing a proj
   expect([r1.status, r1.json.error.code]).toEqual([400, "unknown_worker"]);
 
   const id = "44444444-4444-4444-8444-444444444444";
-  await db.insert(workers).values({ id, name: "w", role: "BE", skills: ["x"], model: "sonnet", effort: "medium", createdAt: new Date() });
+  await db.insert(workers).values({ id, name: "w", roles: ["BE"], skills: ["x"], model: "sonnet", effort: "medium", createdAt: new Date() });
   const r2 = await call("POST", "/v1/projects", { blueprintProjectId: BP_PROJECT, version: 1 }, `worker:${id}`);
   expect([r2.status, r2.json.error.code]).toEqual([403, "operator_only"]);
 

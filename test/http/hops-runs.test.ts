@@ -18,7 +18,7 @@ test("a hop: 201 Hop (running) · a second one while it runs → 409 hop_running
   const { call, project, a, b, c1, c2, P } = await twoCards();
   const h = await hopOn(call, project.id, c1.id, a.id);
   expect(h.status).toBe(201);
-  expect(h.json).toEqual({ id: h.json.id, projectId: project.id, runId: null, claimedBy: null, cardId: c1.id, messageId: null, locatedKeys: null, workerId: a.id, startedAt: h.json.startedAt, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "" });
+  expect(h.json).toEqual({ id: h.json.id, projectId: project.id, runId: null, claimedBy: null, cardId: c1.id, messageId: null, locatedKeys: null, workerId: a.id, startedAt: h.json.startedAt, lastActivityAt: h.json.startedAt, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "" });
   const running = await hopOn(call, project.id, c2.id, b.id);
   expect([running.status, running.json.error.code]).toEqual([409, "hop_running"]);
   expect((await call("GET", P)).json.hopsUsed).toBe(0); // counted when it finishes

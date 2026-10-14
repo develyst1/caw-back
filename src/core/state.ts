@@ -18,7 +18,7 @@ const projectOf = (r: typeof projects.$inferSelect): ProjectState => ({
   entryWorkerId: r.entryWorkerId, createdAt: iso(r.createdAt),
 });
 const workerOf = (r: typeof workers.$inferSelect): WorkerState => ({
-  id: r.id, name: r.name, role: r.role, skills: r.skills, model: r.model, effort: r.effort, combinedFrom: r.combinedFrom, createdAt: iso(r.createdAt),
+  id: r.id, name: r.name, roles: r.roles, skills: r.skills, model: r.model, effort: r.effort, combinedFrom: r.combinedFrom, createdAt: iso(r.createdAt),
 });
 const cardOf = (r: typeof cards.$inferSelect): CardState => ({
   id: r.id, projectId: r.projectId, number: r.number, kind: r.kind as CardState["kind"], title: r.title, todo: r.todo, status: r.status as CardState["status"],
@@ -31,7 +31,7 @@ const noteOf = (r: typeof notes.$inferSelect): NoteState => ({
 });
 
 const hopOf = (r: typeof hops.$inferSelect): HopState => ({
-  id: r.id, projectId: r.projectId, runId: r.runId, claimedBy: r.claimedBy, cardId: r.cardId, messageId: r.messageId, locatedKeys: r.locatedKeys, workerId: r.workerId, startedAt: iso(r.startedAt),
+  id: r.id, projectId: r.projectId, runId: r.runId, claimedBy: r.claimedBy, cardId: r.cardId, messageId: r.messageId, locatedKeys: r.locatedKeys, workerId: r.workerId, startedAt: iso(r.startedAt), lastActivityAt: iso(r.lastActivityAt),
   endedAt: r.endedAt && iso(r.endedAt), outcome: r.outcome as HopState["outcome"], tokensIn: r.tokensIn, tokensOut: r.tokensOut, note: r.note,
 });
 const runOf = (r: typeof runs.$inferSelect): RunState => ({
@@ -106,7 +106,7 @@ export async function saveState(tx: Tx, before: State, after: State): Promise<vo
     await tx.insert(runs).values(row).onConflictDoUpdate({ target: runs.id, set: row });
   }
   for (const h of diff(before.hops, after.hops, (h) => h.id).upsert) {
-    const row = { ...h, startedAt: new Date(h.startedAt), endedAt: date(h.endedAt) };
+    const row = { ...h, startedAt: new Date(h.startedAt), lastActivityAt: new Date(h.lastActivityAt), endedAt: date(h.endedAt) };
     await tx.insert(hops).values(row).onConflictDoUpdate({ target: hops.id, set: row });
   }
   for (const p of diff(before.proposals, after.proposals, (p) => p.id).upsert) {

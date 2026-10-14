@@ -5,13 +5,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChatMessage } from "./api";
 
-export type PromptWorker = { id: string; name: string; role: string; skills: string[] };
+export type PromptWorker = { id: string; name: string; roles: string[]; skills: string[] };
 export type PromptCard = { id: string; number: number; title: string; todo: string };
 
 export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string }): string {
   const { worker, card, projectId } = input;
   return [
-    `คุณคือ ${worker.name} (${worker.role}) ทีมงาน AI ใน CAW — your role skills are in your system prompt: follow them.`,
+    `คุณคือ ${worker.name} (${worker.roles.join(" + ")}) ทีมงาน AI ใน CAW — your role skills are in your system prompt: follow them.`,
     `Your card is ${card.id} (#${card.number}) in project ${projectId}.`,
     "",
     "1. Call the MCP tool `card_context` first (with that cardId), then do the work.",
@@ -67,7 +67,7 @@ export function threadOf(messages: readonly ChatMessage[], messageId: string): T
 export function buildChatPrompt(input: { worker: PromptWorker; messageId: string; projectId: string; thread?: Thread | null }): string {
   const { worker, messageId, projectId, thread } = input;
   return [
-    `คุณคือ ${worker.name} (${worker.role}) ผู้รับแชตของโปรเจกต์ใน CAW — your role skills are in your system prompt: follow them.`,
+    `คุณคือ ${worker.name} (${worker.roles.join(" + ")}) ผู้รับแชตของโปรเจกต์ใน CAW — your role skills are in your system prompt: follow them.`,
     `The operator wrote message ${messageId} in project ${projectId}.`,
     "",
     ...(thread ? [

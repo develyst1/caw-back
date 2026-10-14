@@ -34,6 +34,17 @@ test("propose (v1.6): only keys the hop located — a hop with no locate yet is 
   expect(await n()).toBe(afterLocate); // the refusal wrote nothing (the locate itself wrote one hop.located)
 });
 
+test("locate, then propose on a located key at the version LOCATE returned → 201 (the case Team C hit: DEC-001 @ the latest confirmed version)", async () => {
+  const w = await world();
+  const located = await w.locate();
+  expect(located.status).toBe(200);
+  const version = located.json.version as number; // read from the locate answer — never hard-coded
+  expect(located.json.candidates.map((c: any) => c.key)).toContain("DEC-001");
+  const r = await w.propose([w.item({ title: "กฎห้องใหญ่", anchor: { key: "DEC-001", version } })]);
+  expect([r.status, r.json.error]).toEqual([201, undefined]);
+  expect(r.json.items[0].anchor).toEqual({ key: "DEC-001", version });
+});
+
 test("locate twice → the hop's locatedKeys is the UNION (order kept, no repeats); only keys, no spec text", async () => {
   const w = await world();
   expect((await w.locate("ห้องใหญ่ต้องอนุมัติ")).status).toBe(200);
@@ -99,7 +110,8 @@ test("propose errors: validation 400 · not a chain member 400 · bad dependsOn 
   const gone = await w.propose([w.item({ anchor: { key: "STEP-004", version: 9 } })]);
   expect([gone.status, gone.json.error.code]).toEqual([422, "version_not_confirmed"]);
   await w.call("POST", `${w.P}/locate`, { request: "ห้องใหญ่ต้องอนุมัติ" }, w.as, w.H);
-  const stale = await w.propose([w.item({ anchor: { key: "STEP-005", version: 3 } })]); // located, but not in any recorded version we serve for v3 contexts
+  w.fake.mode.gone.add("STEP-005"); // located, then removed from Blueprint (STEP-005 is a real part of v3: without this the call is accepted)
+  const stale = await w.propose([w.item({ anchor: { key: "STEP-005", version: 3 } })]);
   expect([stale.status, stale.json.error.code]).toEqual([422, "anchor_not_in_version"]);
   w.fake.mode.down = true;
   const down = await w.propose([w.item()]);

@@ -9,7 +9,7 @@ export type ProjectState = {
   entryWorkerId: string | null; createdAt: string;
 };
 export type WorkerState = {
-  id: string; name: string; role: string; skills: string[]; model: string; effort: string; combinedFrom: string[] | null; createdAt: string;
+  id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string; combinedFrom: string[] | null; createdAt: string;
 };
 export type CardState = {
   id: string; projectId: string; number: number; kind: "work" | "question"; title: string; todo: string; status: CardStatus;
@@ -31,7 +31,7 @@ export type ProposalState = {
 };
 export type HopState = {
   id: string; projectId: string; runId: string | null; claimedBy: string | null; cardId: string | null; messageId: string | null; locatedKeys: string[] | null; workerId: string;
-  startedAt: string; endedAt: string | null; outcome: HopOutcome | null; tokensIn: number | null; tokensOut: number | null; note: string;
+  startedAt: string; lastActivityAt: string; /* v1.11: startedAt, then each hop.heartbeat */ endedAt: string | null; outcome: HopOutcome | null; tokensIn: number | null; tokensOut: number | null; note: string;
 };
 export type RunState = {
   id: string; projectId: string; mode: Mode; hopBudget: number; startedAt: string; endedAt: string | null; stopReason: StopReason | null; report: string | null;
@@ -74,6 +74,9 @@ export function canonical(s: State): State {
 const touch = (cards: CardState[], id: string, at: string, change: Partial<CardState>): CardState[] =>
   cards.map((c) => (c.id === id ? { ...c, ...change, updatedAt: at } : c));
 
+/** v1.10: new events carry `roles`; an old worker.created / worker.combined carries `role`, read as `[role]` */
+const rolesOf = (d: { roles: string[] } | { role: string }): string[] => ("roles" in d ? [...d.roles] : [d.role]);
+
 export function reduce(state: State, event: CawEvent): State {
   switch (event.type) {
     case "project.created": {
@@ -84,10 +87,20 @@ export function reduce(state: State, event: CawEvent): State {
         mode: "manual", hopBudget: 0, hopsUsed: 0, workspace: { roots: [] }, entryWorkerId: null, createdAt: event.at,
       } };
     }
-    case "worker.created":
-      return { ...state, workers: [...state.workers, { ...event.data, combinedFrom: null, createdAt: event.at }] };
-    case "worker.combined":
-      return { ...state, workers: [...state.workers, { ...event.data, combinedFrom: [...event.data.combinedFrom], createdAt: event.at }] };
+    case "worker.created": {
+      const { id, name, skills, model, effort } = event.data;
+      return { ...state, workers: [...state.workers, { id, name, roles: rolesOf(event.data), skills, model, effort, combinedFrom: null, createdAt: event.at }] };
+    }
+    case "worker.combined": {
+      const { id, name, skills, model, effort, combinedFrom } = event.data;
+      return { ...state, workers: [...state.workers, { id, name, roles: rolesOf(event.data), skills, model, effort, combinedFrom: [...combinedFrom], createdAt: event.at }] };
+    }
+    // only what the event carries changes (v1.10): changing roles does not touch model / effort / skills
+    case "worker.updated": {
+      const { id, ...sent } = event.data;
+      const patch = Object.fromEntries(Object.entries(sent).filter(([, v]) => v !== undefined)); // a key left out is a field left alone
+      return { ...state, workers: state.workers.map((w) => (w.id === id ? { ...w, ...patch } : w)) };
+    }
     case "chain.member_added":
       return { ...state, members: [...state.members, event.data.workerId] };
     case "chain.member_removed": {
@@ -174,12 +187,14 @@ export function reduce(state: State, event: CawEvent): State {
       const d = event.data;
       const hop: HopState = {
         id: d.id, projectId: event.projectId!, runId: d.runId, claimedBy: d.claim, cardId: d.cardId, messageId: d.messageId, locatedKeys: null, workerId: d.workerId,
-        startedAt: event.at, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "",
+        startedAt: event.at, lastActivityAt: event.at, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "",
       };
       // the runner has picked a retry up: the next hop on the message clears the request (v1.9)
       const chat = d.messageId === null ? state.chat : state.chat.map((m) => (m.id === d.messageId && m.retryRequestedAt !== null ? { ...m, retryRequestedAt: null } : m));
       return { ...state, hops: [...state.hops, hop], chat };
     }
+    case "hop.heartbeat":
+      return { ...state, hops: state.hops.map((h) => (h.id === event.data.hopId ? { ...h, lastActivityAt: event.at } : h)) };
     // the keys a chat hop located — never the spec text (REQ-010 R1); each locate adds, order kept, no repeats (v1.6)
     case "hop.located":
       return { ...state, hops: state.hops.map((h) => (h.id === event.data.hopId ? { ...h, locatedKeys: [...new Set([...(h.locatedKeys ?? []), ...event.data.keys])] } : h)) };

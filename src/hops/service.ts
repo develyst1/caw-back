@@ -79,6 +79,29 @@ export async function patchHop(db: Db, actor: Actor, hopId: string, patch: HopPa
   return hopIn(state);
 }
 
+/** A heartbeat under this old writes nothing (SPEC § v1.11): a runner may call every 30 s, a 20-minute hop gets ~20 events. */
+const HEARTBEAT_MIN_GAP_MS = 60_000;
+class Fresh extends Error { constructor(readonly lastActivityAt: string) { super("fresh"); } } // thrown inside the decision: rolls the (empty) write back
+
+/** The runner says a running hop is still alive. The core stamps the time; under 60 s since the last write → nothing is written, the current value comes back. */
+export async function heartbeatHop(db: Db, actor: Actor, hopId: string): Promise<{ lastActivityAt: string }> {
+  if (!actor.startsWith("runner:")) throw new ApiError(403, "runner_only", "only a runner sends a hop heartbeat");
+  const projectId = await projectIdOf(db, hopsTable, hopId, "hop");
+  try {
+    const { state } = await writeDecided(db, projectId, (s) => {
+      const hop = s.hops.find((h) => h.id === hopId) ?? (() => { throw notFound("hop"); })();
+      if (hop.endedAt !== null) throw new ApiError(409, "hop_not_running", "that hop has finished");
+      const at = now();
+      if (Date.parse(at) - Date.parse(hop.lastActivityAt) < HEARTBEAT_MIN_GAP_MS) throw new Fresh(hop.lastActivityAt);
+      return { type: "hop.heartbeat", projectId, actor, at, data: { hopId } };
+    });
+    return { lastActivityAt: state.hops.find((h) => h.id === hopId)!.lastActivityAt };
+  } catch (e) {
+    if (e instanceof Fresh) return { lastActivityAt: e.lastActivityAt };
+    throw e;
+  }
+}
+
 /** Newest first. */
 export async function listHops(db: Db, projectId: string, q: { limit: number; runId?: string }): Promise<Hop[]> {
   const s = await loadState(db, projectId);

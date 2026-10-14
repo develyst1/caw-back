@@ -445,6 +445,10 @@
           "id": {
             "type": "string"
           },
+          "lastActivityAt": {
+            "description": "startedAt, then the last heartbeat (v1.11); the screen shows how long a running hop has been silent from it",
+            "type": "string"
+          },
           "locatedKeys": {
             "description": "a chat hop: the keys of every locate it made (v1.6); never the spec text",
             "items": {
@@ -522,6 +526,7 @@
           "locatedKeys",
           "workerId",
           "startedAt",
+          "lastActivityAt",
           "endedAt",
           "outcome",
           "tokensIn",
@@ -893,8 +898,10 @@
             "type": "string"
           },
           "role": {
+            "description": "roles[0] — deprecated, read `roles`",
             "enum": [
               "PM",
+              "BA",
               "SA",
               "FE",
               "BE",
@@ -902,6 +909,22 @@
               "other"
             ],
             "type": "string"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "PM",
+                "BA",
+                "SA",
+                "FE",
+                "BE",
+                "QA",
+                "other"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
           },
           "skills": {
             "items": {
@@ -913,6 +936,7 @@
         "required": [
           "id",
           "name",
+          "roles",
           "role",
           "skills",
           "model",
@@ -1954,6 +1978,80 @@
               }
             },
             "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          }
+        }
+      }
+    },
+    "/v1/hops/{hopId}/heartbeat": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "hopId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "lastActivityAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "lastActivityAt"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the hop's lastActivityAt — the core's own time; unchanged when the last write was under 60 s ago"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
           },
           "404": {
             "content": {
@@ -4346,8 +4444,10 @@
                     "type": "string"
                   },
                   "role": {
+                    "description": "deprecated — the old single role, read as roles: [role]; send exactly one of `roles` / `role`",
                     "enum": [
                       "PM",
+                      "BA",
                       "SA",
                       "FE",
                       "BE",
@@ -4355,6 +4455,24 @@
                       "other"
                     ],
                     "type": "string"
+                  },
+                  "roles": {
+                    "description": "one or more roles, in the order picked",
+                    "items": {
+                      "enum": [
+                        "PM",
+                        "BA",
+                        "SA",
+                        "FE",
+                        "BE",
+                        "QA",
+                        "other"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 7,
+                    "minItems": 1,
+                    "type": "array"
                   },
                   "skills": {
                     "items": {
@@ -4368,14 +4486,13 @@
                 },
                 "required": [
                   "name",
-                  "role",
                   "skills"
                 ],
                 "type": "object"
               }
             }
           },
-          "description": "a worker; model / effort default by role",
+          "description": "a worker; model / effort default to the strongest of the roles' defaults",
           "required": true
         },
         "responses": {
@@ -4424,6 +4541,7 @@
     },
     "/v1/workers/combine": {
       "post": {
+        "deprecated": true,
         "requestBody": {
           "content": {
             "application/json": {
@@ -4469,6 +4587,133 @@
               }
             },
             "description": "created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+          }
+        }
+      }
+    },
+    "/v1/workers/{id}": {
+      "patch": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "effort": {
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high"
+                    ],
+                    "type": "string"
+                  },
+                  "model": {
+                    "enum": [
+                      "opus",
+                      "sonnet",
+                      "haiku"
+                    ],
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 40,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "roles": {
+                    "description": "one or more roles, in the order picked",
+                    "items": {
+                      "enum": [
+                        "PM",
+                        "BA",
+                        "SA",
+                        "FE",
+                        "BE",
+                        "QA",
+                        "other"
+                      ],
+                      "type": "string"
+                    },
+                    "maxItems": 7,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "skills": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 50,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "description": "the fields to change — only what is sent changes",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Worker"
+                }
+              }
+            },
+            "description": "the worker after the change"
           },
           "400": {
             "content": {

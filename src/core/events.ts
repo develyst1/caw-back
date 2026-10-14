@@ -13,6 +13,10 @@ export const EVENT_TYPES = [
   "chat.posted", "chat.replied", "hop.located", "proposal.made", "proposal.accepted", "proposal.superseded",
   // v1.9 (D-057): the operator asks for a failed chat step to be tried again
   "chat.retry_requested",
+  // v1.10 (D-060): the operator edits a worker (name · roles · skills · model · effort)
+  "worker.updated",
+  // v1.11 (D-066): a running hop is still alive — the core stamps the time, throttled to one per 60 s
+  "hop.heartbeat",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -20,7 +24,10 @@ export type EventType = (typeof EVENT_TYPES)[number];
 export type Actor = "operator" | `worker:${string}` | `runner:${string}`;
 
 type Header = { projectId: string | null; actor: string; at: string /* ISO-8601, server-made */ };
-type WorkerData = { id: string; name: string; role: string; skills: string[]; model: string; effort: string };
+type WorkerData = { id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string };
+/** what `worker.created` / `worker.combined` carried before v1.10: one `role`. The reducer reads it as `roles: [role]`; the events are never rewritten. */
+type LegacyWorkerData = Omit<WorkerData, "roles"> & { role: string };
+export type WorkerPatch = Partial<Pick<WorkerData, "name" | "roles" | "skills" | "model" | "effort">>;
 export type CardStatus = "todo" | "doing" | "review" | "done" | "stuck";
 export type Mode = "manual" | "dispatcher";
 export type HopOutcome = "commented" | "handed_off" | "status" | "asked" | "failed" | "stopped" | "interrupted" | "replied" | "proposed" | "amended" | "proposed_and_amended";
@@ -36,8 +43,9 @@ export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_tw
 // (PATCH …/mode sets the mode and, optionally, the budget in ONE event: project.mode_set).
 export type CawEvent = Header & (
   | { type: "project.created"; data: { id: string; name: string; blueprintProjectId: string; version: number } }
-  | { type: "worker.created"; data: WorkerData }
-  | { type: "worker.combined"; data: WorkerData & { combinedFrom: [string, string] } }
+  | { type: "worker.created"; data: WorkerData | LegacyWorkerData }
+  | { type: "worker.combined"; data: (WorkerData | LegacyWorkerData) & { combinedFrom: [string, string] } }
+  | { type: "worker.updated"; data: { id: string } & WorkerPatch }
   | { type: "chain.member_added"; data: { workerId: string } }
   | { type: "chain.member_removed"; data: { workerId: string; reassignTo: string | null } }
   | { type: "chain.edge_added" | "chain.edge_removed"; data: { from: string; to: string } }
@@ -59,6 +67,7 @@ export type CawEvent = Header & (
   | { type: "run.started"; data: { id: string; mode: Mode; hopBudget: number } }
   | { type: "run.finished"; data: { runId: string; stopReason: StopReason; report: string } }
   | { type: "hop.started"; data: { id: string; cardId: string | null; messageId: string | null; workerId: string; runId: string | null; claim: string | null } }
+  | { type: "hop.heartbeat"; data: { hopId: string } }
   | { type: "hop.located"; data: { hopId: string; keys: string[] } }
   | { type: "chat.posted"; data: { id: string; text: string } }
   | { type: "chat.replied"; data: { id: string; messageId: string; hopId: string; text: string; questions: ChatQuestion[] | null; proposalId: string | null; amendment: { blueprintMessageId: string; link: string } | null } }

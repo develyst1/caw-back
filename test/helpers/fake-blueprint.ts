@@ -39,7 +39,7 @@ export function fakeBlueprint() {
       const feed = /^\/versions\?after=(\d+)$/.exec(rest);
       if (feed && mode.feed) return Response.json(mode.feed(Number(feed[1])));
       if (feed && Number(feed[1]) <= 3) return json(`feed-after-${feed[1]}`);
-      const ctx = /^\/versions\/([12])\/parts\/(STEP-00[1-6]|DEC-001|API-001|INT-00[23]|SCR-001)\/context$/.exec(rest); // the keys a locate finds + the six steps, recorded at v1 and v2
+      const ctx = /^\/versions\/([123])\/parts\/(STEP-00[1-6]|DEC-001|API-001|INT-00[23]|SCR-001)\/context$/.exec(rest); // the keys a locate finds + the six steps, recorded at v1, v2 and v3
       if (ctx) return mode.gone.has(ctx[2]!) ? json("context-404", 404) : json(`context-v${ctx[1]}-${ctx[2]!.toLowerCase()}`);
       if (/^\/versions\/\d+\/parts\/[^/]+\/context$/.test(rest)) return json("context-404", 404);
       return json("project-404", 404);

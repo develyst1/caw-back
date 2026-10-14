@@ -3,7 +3,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Api, ApiEvent, Card, Finish, Hop, HopOutcome, Project, Worker } from "./api";
+import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutcome, type Project, type Worker, RunnerApiError } from "./api";
 import type { RunnerConfig } from "./config";
 import { type Thread, buildChatPrompt, buildPrompt, loadSkills, threadOf, writeSkillsFile } from "./prompt";
 import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
@@ -68,6 +68,9 @@ export const bunSpawn: Spawner = (cmd, { cwd, env }) => {
     },
   };
 };
+
+/** how often a hop's stream may tell the core it is alive (contract v1.11; the core itself writes at most once a minute) */
+const HEARTBEAT_MS = 30_000;
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -238,6 +241,10 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
     const state = new StreamState();
     const end = { note: null as string | null };
+    // Heartbeat (contract v1.11, D-066): while claude's stream prints, tell the core the hop is alive — at most one every 30 s, never awaited, never a timer
+    // (a hung child prints nothing, so it must not look alive). `lastSent` starts at the spawn: `hop.started` already stamped the first activity.
+    const clock = () => (deps.now ?? (() => new Date()))().getTime();
+    const beat = { lastSent: clock(), inFlight: false, over: false };
     const lines: string[] = []; // the stream as claude printed it, for the trace
     const stop = () => terminate(child, deps.killGraceMs ?? 5000);
     const timer = setTimeout(() => { end.note ??= NOTES.timeout; stop(); }, config.hopMaxMs);
@@ -255,6 +262,14 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
       }
       await readLines(child.stdout, (line) => {
         lines.push(line);
+        if (end.note === null && !beat.over && !beat.inFlight && !deps.stopping?.() && clock() - beat.lastSent >= HEARTBEAT_MS) {
+          beat.lastSent = clock();
+          beat.inFlight = true;
+          // a failed heartbeat never stops or fails the hop; once the core says the hop is not running, there is nothing more to tell it
+          void deps.api.heartbeat(hop.id)
+            .catch((e) => { if (e instanceof RunnerApiError && e.code === "hop_not_running") beat.over = true; log(`hop ${hop.id}: heartbeat failed: ${e instanceof RunnerApiError ? e.code : messageOf(e)}`); })
+            .finally(() => { beat.inFlight = false; });
+        }
         const blocks = state.feed(line);
         if (blocks.length > 0 && end.note === null) {
           end.note = NOTES.blocked(worker.name, blocks[0]!.action);

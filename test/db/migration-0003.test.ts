@@ -40,11 +40,11 @@ test("0003 applies on a database at 0002: new tables and columns, card_id nullab
     await pg.exec(`INSERT INTO caw.chat_messages (id, project_id, author, text, at) VALUES ('${U(5)}','${U(2)}','operator','สวัสดี', now())`);
     // a chat hop: message_id set, card_id null — with each of the new outcomes
     for (const [i, outcome] of ["replied", "proposed", "amended", "proposed_and_amended"].entries()) {
-      await pg.exec(`INSERT INTO caw.hops (id, project_id, message_id, worker_id, started_at, ended_at, outcome, located_keys) VALUES ('${U(10 + i)}','${U(2)}','${U(5)}','${U(1)}', now(), now(), '${outcome}', '{STEP-001}')`);
+      await pg.exec(`INSERT INTO caw.hops (id, project_id, message_id, worker_id, started_at, last_activity_at, ended_at, outcome, located_keys) VALUES ('${U(10 + i)}','${U(2)}','${U(5)}','${U(1)}', now(), now(), now(), '${outcome}', '{STEP-001}')`);
     }
-    await expect(pg.exec(`INSERT INTO caw.hops (id, project_id, worker_id, started_at) VALUES ('${U(20)}','${U(2)}','${U(1)}', now())`)).rejects.toThrow(); // neither
-    await expect(pg.exec(`INSERT INTO caw.hops (id, project_id, card_id, message_id, worker_id, started_at) VALUES ('${U(21)}','${U(2)}','${U(3)}','${U(5)}','${U(1)}', now())`)).rejects.toThrow(); // both
-    await expect(pg.exec(`INSERT INTO caw.hops (id, project_id, message_id, worker_id, started_at, outcome) VALUES ('${U(22)}','${U(2)}','${U(5)}','${U(1)}', now(), 'nonsense')`)).rejects.toThrow(); // an outcome not in the list
+    await expect(pg.exec(`INSERT INTO caw.hops (id, project_id, worker_id, started_at, last_activity_at) VALUES ('${U(20)}','${U(2)}','${U(1)}', now(), now())`)).rejects.toThrow(); // neither
+    await expect(pg.exec(`INSERT INTO caw.hops (id, project_id, card_id, message_id, worker_id, started_at, last_activity_at) VALUES ('${U(21)}','${U(2)}','${U(3)}','${U(5)}','${U(1)}', now(), now())`)).rejects.toThrow(); // both
+    await expect(pg.exec(`INSERT INTO caw.hops (id, project_id, message_id, worker_id, started_at, last_activity_at, outcome) VALUES ('${U(22)}','${U(2)}','${U(5)}','${U(1)}', now(), now(), 'nonsense')`)).rejects.toThrow(); // an outcome not in the list
     await pg.exec(`INSERT INTO caw.proposals (id, project_id, message_id, version, items, status) VALUES ('${U(30)}','${U(2)}','${U(5)}',1,'[]','open')`.replace(") VALUES", ", created_at) VALUES").replace("'open')", "'open', now())"));
     await expect(pg.exec(`INSERT INTO caw.proposals (id, project_id, message_id, version, items, status, created_at) VALUES ('${U(31)}','${U(2)}','${U(5)}',1,'[]','weird', now())`)).rejects.toThrow();
   } finally {

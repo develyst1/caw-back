@@ -1,0 +1,3 @@
+# `bun test` ignores the operator's .env for the keys .env.example lists (TASK-A-083 Q2) — see test/setup/no-operator-env.ts.
+[test]
+preload = ["./test/setup/no-operator-env.ts"]

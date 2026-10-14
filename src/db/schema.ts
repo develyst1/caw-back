@@ -11,7 +11,7 @@ const at = (name: string) => timestamp(name, { withTimezone: true, mode: "date" 
 export const workers = caw.table("workers", {
   id: uuid("id").primaryKey(),
   name: text("name").notNull().unique(),
-  role: text("role").notNull(),
+  roles: text("roles").array().notNull(), // v1.10: ≥ 1 of the seven, in the order picked (the single `role` column is gone — migration 0005)
   skills: text("skills").array().notNull(),
   model: text("model").notNull(),
   effort: text("effort").notNull(),
@@ -19,7 +19,7 @@ export const workers = caw.table("workers", {
   createdAt: at("created_at").notNull(),
 }, (t) => [
   check("workers_name_length", sql`char_length(${t.name}) between 1 and 40`),
-  check("workers_role", sql`${t.role} in ('PM','SA','FE','BE','QA','other')`),
+  check("workers_roles", sql`cardinality(${t.roles}) >= 1 AND ${t.roles} <@ ARRAY['PM','BA','SA','FE','BE','QA','other']::text[]`),
   check("workers_skills_not_empty", sql`cardinality(${t.skills}) >= 1`),
   check("workers_model", sql`${t.model} in ('opus','sonnet','haiku')`),
   check("workers_effort", sql`${t.effort} in ('low','medium','high')`),
@@ -158,6 +158,7 @@ export const hops = caw.table("hops", {
   locatedKeys: text("located_keys").array(), // union of the keys of every locate in this hop (v1.4 / v1.6); null until the first
   workerId: uuid("worker_id").notNull().references(() => workers.id),
   startedAt: at("started_at").notNull(),
+  lastActivityAt: at("last_activity_at").notNull(), // v1.11: = started_at until the first heartbeat
   endedAt: at("ended_at"),
   outcome: text("outcome"),
   tokensIn: integer("tokens_in"),

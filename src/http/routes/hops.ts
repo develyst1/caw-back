@@ -1,6 +1,6 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Db } from "../../db/client";
-import { finishRun, listHops, listRuns, patchHop, startHop, startRun } from "../../hops/service";
+import { finishRun, heartbeatHop, listHops, listRuns, patchHop, startHop, startRun } from "../../hops/service";
 import type { Env } from "../actor";
 import { errors } from "../errors";
 
@@ -13,7 +13,7 @@ const StopReason = z.enum(["budget_spent", "nothing_workable", "failed_review_tw
 const HopSchema = z.object({
   id: z.string(), projectId: z.string(), runId: z.string().nullable(), claimedBy: z.string().nullable(), cardId: z.string().nullable(), messageId: z.string().nullable(),
   locatedKeys: z.array(z.string()).nullable().openapi({ description: "a chat hop: the keys of every locate it made (v1.6); never the spec text" }), workerId: z.string(),
-  startedAt: z.string(), endedAt: z.string().nullable(), outcome: Outcome.nullable(), tokensIn: z.number().int().nullable(), tokensOut: z.number().int().nullable(), note: z.string(),
+  startedAt: z.string(), lastActivityAt: z.string().openapi({ description: "startedAt, then the last heartbeat (v1.11); the screen shows how long a running hop has been silent from it" }), endedAt: z.string().nullable(), outcome: Outcome.nullable(), tokensIn: z.number().int().nullable(), tokensOut: z.number().int().nullable(), note: z.string(),
 }).openapi("Hop");
 const RunSchema = z.object({
   id: z.string(), projectId: z.string(), mode: z.enum(["manual", "dispatcher"]), hopBudget: z.number().int(), startedAt: z.string(), endedAt: z.string().nullable(),
@@ -39,6 +39,11 @@ export function hopRoutes(app: OpenAPIHono<Env>, db: Db) {
     method: "patch", path: "/v1/hops/{hopId}", request: { params: z.object({ hopId: z.string() }), body: body(z.union([Finish, Claim]), "finish the hop, or claim it (set once)") },
     responses: { 200: json(HopSchema, "the hop"), 400: errors[400], 404: errors[404], 409: errors[409] },
   }), async (c) => c.json(await patchHop(db, c.get("actor"), c.req.valid("param").hopId, c.req.valid("json")), 200));
+
+  app.openapi(createRoute({
+    method: "post", path: "/v1/hops/{hopId}/heartbeat", request: { params: z.object({ hopId: z.string() }) },
+    responses: { 200: json(z.object({ lastActivityAt: z.string() }), "the hop's lastActivityAt — the core's own time; unchanged when the last write was under 60 s ago"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
+  }), async (c) => c.json(await heartbeatHop(db, c.get("actor"), c.req.valid("param").hopId), 200));
 
   app.openapi(createRoute({
     method: "get", path: "/v1/projects/{id}/hops",

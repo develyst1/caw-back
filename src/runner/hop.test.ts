@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chainOf3, newCard, setup } from "../../test/helpers/api";
-import { createApi } from "./api";
+import { RunnerApiError, createApi } from "./api";
 import { HOOKS } from "./config";
 import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, runHop } from "./hop";
 import { type Procs, readHopFile } from "./procs";
@@ -583,7 +583,7 @@ describe("what claude is started with (SPEC-C-003 § 2)", () => {
 });
 
 describe("buildArgs / buildMcpConfig", () => {
-  const worker = { id: "w", name: "N", role: "BE", skills: [], model: "sonnet" as const, effort: "high" as const };
+  const worker = { id: "w", name: "N", roles: ["BE"], skills: [], model: "sonnet" as const, effort: "high" as const };
   test("a worker with no skills passes no --append-system-prompt-file", () => {
     const a = buildArgs({ prompt: "p", worker, roots: ["/r"], settingsFile: "/s", mcpFile: "/m", skillsFile: null });
     expect(a).not.toContain("--append-system-prompt-file");
@@ -613,6 +613,37 @@ describe("buildArgs / buildMcpConfig", () => {
     expect(s.args[1].startsWith("/")).toBe(true);
     expect(s.args[1].endsWith("src/mcp/server.ts")).toBe(true);
     expect(existsSync(s.args[1])).toBe(true);
+  });
+});
+
+describe("a worker with two roles loads exactly its own skills[] (TASK-C-037, contract v1.10)", () => {
+  mkdirSync(join(WS, ".claude/skills/role-fe"), { recursive: true });
+  writeFileSync(join(WS, ".claude/skills/role-fe/SKILL.md"), "FE craft");
+  /** the skills file is removed when the hop ends, so it is read at spawn time */
+  async function skillsOf(skills: string[]) {
+    const w = await world();
+    const input = await w.input();
+    let text = "";
+    w.set(() => {
+      const cmd = w.spawned[w.spawned.length - 1]!.cmd;
+      const at = cmd.indexOf("--append-system-prompt-file");
+      text = at < 0 ? "" : readFileSync(cmd[at + 1]!, "utf8");
+      return fakeChild({ lines: fixture("ok") });
+    });
+    await runHop(w.deps, { ...input, worker: { ...input.worker, roles: ["FE", "BE"], skills } });
+    return { text, prompt: w.spawned[0]!.cmd[2]! };
+  }
+  test("roles FE + BE with skills [role-be]: role-be only — the FE role adds no role-fe skill", async () => {
+    const { text, prompt } = await skillsOf(["role-be"]);
+    expect(text).toContain("# Skill: role-be");
+    expect(text).not.toContain("role-fe");
+    expect(text).not.toContain("FE craft");
+    expect(prompt).toContain("(FE + BE)");
+  });
+  test("roles FE + BE with skills [role-fe, role-be]: both, in that order — none dropped", async () => {
+    const { text } = await skillsOf(["role-fe", "role-be"]);
+    expect(text.indexOf("# Skill: role-fe")).toBeGreaterThan(-1);
+    expect(text.indexOf("# Skill: role-be")).toBeGreaterThan(text.indexOf("# Skill: role-fe"));
   });
 });
 
@@ -657,5 +688,95 @@ describe("the per-hop trace and the tool summary (TASK-C-036)", () => {
     w.set(() => fakeChild({ lines: [...toolLines, ...fixture("ok")], before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "d" }, w.actor); } }));
     await runHop(w.deps, await w.input());
     expect((await w.finished()).note).toBe("");
+  });
+});
+
+describe("the hop heartbeat (TASK-C-038, contract v1.11, D-066)", () => {
+  /** A fake child whose stdout lines the test pushes one at a time, with the fake clock set before each */
+  function scripted() {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    let done!: (code: number) => void;
+    const exited = new Promise<number>((r) => { done = r; });
+    const enc = new TextEncoder();
+    const child: Child = {
+      pid: undefined, exited, kill: () => { try { controller.close(); } catch { /* closed */ } done(143); }, stderrText: async () => "",
+      stdout: new ReadableStream<Uint8Array>({ start(c) { controller = c; } }),
+    };
+    return { child, push: async (line: string) => { controller.enqueue(enc.encode(`${line}\n`)); await new Promise((r) => setTimeout(r, 5)); }, end: () => { try { controller.close(); } catch { /* closed */ } done(0); } };
+  }
+  const line = JSON.stringify({ type: "system", subtype: "status" });
+  async function setupHb(heartbeat: (hopId: string) => Promise<{ lastActivityAt: string }>) {
+    const w = await world();
+    let t = 0; // seconds on the fake clock
+    const calls: number[] = [];
+    w.deps.now = () => new Date(t * 1000);
+    w.deps.api = { ...w.deps.api, heartbeat: async (id: string) => { calls.push(t); return heartbeat(id); } };
+    const s = scripted();
+    w.set(() => s.child);
+    const running = (async () => runHop(w.deps, await w.input()))();
+    await new Promise((r) => setTimeout(r, 30)); // the child is spawned
+    const at = async (sec: number) => { t = sec; await s.push(line); };
+    return { w, s, at, calls, running };
+  }
+  const ok = async () => ({ lastActivityAt: "2026-10-14T00:00:00.000Z" });
+
+  test("lines at t = 0, 10, 31, 45, 62 s → heartbeats at 31 and 62 only (30 s since the last one SENT; the first is due 30 s after the spawn)", async () => {
+    const h = await setupHb(ok);
+    for (const sec of [0, 10, 31, 45, 62]) await h.at(sec);
+    h.s.end(); await h.running;
+    expect(h.calls).toEqual([31, 62]);
+  });
+  test("one line at t = 0, a 5-minute silence, then a line → exactly one heartbeat, on the late line (no timer)", async () => {
+    const h = await setupHb(ok);
+    await h.at(0); await h.at(300);
+    h.s.end(); await h.running;
+    expect(h.calls).toEqual([300]);
+  });
+  test("a heartbeat that rejects: the hop still ends with its normal outcome and the log says `heartbeat failed`", async () => {
+    const h = await setupHb(async () => { throw new Error("network down"); });
+    await h.at(31);
+    await h.w.call("POST", `/v1/cards/${h.w.card.id}/comments`, { text: "done" }, h.w.actor);
+    h.s.end(); await h.running;
+    expect((await h.w.finished()).outcome).toBe("commented");
+    expect(h.w.log.some((l) => l.includes(`hop ${h.w.hop.id}: heartbeat failed: network down`))).toBe(true);
+  });
+  test("a 409 hop_not_running: no further heartbeat for this hop", async () => {
+    const h = await setupHb(async () => { throw new RunnerApiError(409, "hop_not_running", "the hop is not running"); });
+    await h.at(31); await h.at(70); await h.at(120);
+    h.s.end(); await h.running;
+    expect(h.calls).toEqual([31]);
+    expect(h.w.log.some((l) => l.includes("heartbeat failed: hop_not_running"))).toBe(true);
+  });
+  test("a slow heartbeat (still pending) while lines keep coming: no second call until it settles", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const h = await setupHb(async () => { await gate; return { lastActivityAt: "x" }; });
+    await h.at(31); await h.at(70); await h.at(120);
+    expect(h.calls).toEqual([31]);
+    release(); await new Promise((r) => setTimeout(r, 10));
+    await h.at(150);
+    h.s.end(); await h.running;
+    expect(h.calls).toEqual([31, 150]);
+  });
+  test("none after the stream has stopped: the hook-block line ends the reading, the child is killed, and no heartbeat follows it", async () => {
+    const h = await setupHb(ok);
+    await h.at(31);                                                      // one heartbeat
+    for (const l of fixture("push-absolute-hooks").slice(0, 15)) { try { await h.s.push(l); } catch { break; } } // reaches the block → the stream is stopped
+    await h.running;
+    expect((await h.w.finished()).outcome).toBe("stopped");
+    expect(h.calls).toEqual([31]);
+  });
+  test("through the REAL in-process API (A-085): lines spread over 95 s of fake time → every heartbeat answers 200, none fails, and Hop.lastActivityAt is not before startedAt", async () => {
+    const results: { lastActivityAt: string }[] = [];
+    const h: Awaited<ReturnType<typeof setupHb>> = await setupHb(async (id) => { const r = await h.w.api.heartbeat(id); results.push(r); return r; });
+    for (const sec of [0, 31, 62, 95]) await h.at(sec);
+    h.s.end(); await h.running;
+    expect(h.calls).toEqual([31, 62, 95]);               // the runner's clock: 30 s apart
+    expect(results).toHaveLength(3);                       // all three answered 200 (the api client throws on any other status)
+    expect(h.w.log.some((l) => l.includes("heartbeat failed"))).toBe(false);
+    const hop = await h.w.finished();
+    expect(hop.lastActivityAt).toBeDefined();
+    expect(Date.parse(hop.lastActivityAt!)).toBeGreaterThanOrEqual(Date.parse(hop.startedAt));
+    for (const r of results) expect(Date.parse(r.lastActivityAt)).toBeGreaterThanOrEqual(Date.parse(hop.startedAt)); // the core stamps the time: the runner sent none
   });
 });

@@ -36,7 +36,7 @@ export const createProject = (call: Call, over: object = {}) =>
 export async function mkWorker(call: Call, name: string, role = "BE", skills: string[] = [name], extra: object = {}) {
   const r = await call("POST", "/v1/workers", { name, role, skills, ...extra });
   if (r.status !== 201) throw new Error(`worker ${name}: ${r.status} ${JSON.stringify(r.json)}`);
-  return r.json as { id: string; name: string; role: string; skills: string[]; model: string; effort: string; combinedFrom: string[] | null };
+  return r.json as { id: string; name: string; roles: string[]; role: string; skills: string[]; model: string; effort: string; combinedFrom: string[] | null };
 }
 
 /** a project, workers a / b / c (BE, FE, QA) all in its chain; `ids` = their ids */

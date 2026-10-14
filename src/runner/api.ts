@@ -11,7 +11,7 @@ export type Project = {
   /** the worker who answers the chat (and takes the first card); null until the operator picks one */
   entryWorkerId: string | null;
 };
-export type Worker = { id: string; name: string; role: string; skills: string[]; model: "opus" | "sonnet" | "haiku"; effort: "low" | "medium" | "high" };
+export type Worker = { id: string; name: string; roles: string[]; skills: string[]; model: "opus" | "sonnet" | "haiku"; effort: "low" | "medium" | "high" };
 export type Card = {
   id: string; projectId: string; number: number; title: string; todo: string; status: string; assigneeId: string | null;
   kind: "work" | "question"; question: { text: string; proposedDefault: string; cases: string[] } | null; answer: string | null;
@@ -26,6 +26,9 @@ export type HopOutcome = "commented" | "handed_off" | "status" | "asked" | "fail
 export type Hop = {
   id: string; projectId: string; runId: string | null; claimedBy: string | null; cardId: string | null; messageId: string | null; workerId: string;
   startedAt: string; endedAt: string | null; outcome: HopOutcome | null; tokensIn: number | null; tokensOut: number | null; note: string;
+  /** contract v1.11: set to `startedAt` by `hop.started`, moved by each heartbeat; never null on the wire. Optional here only so the runner's
+   *  test fixtures (main.test.ts, report.test.ts — outside TASK-C-038's file list) need not carry it; the runner never reads it. */
+  lastActivityAt?: string;
 };
 export type ChatQuestion = { text: string; proposedDefault?: string; cases?: string[] };
 /** `replyTo` / `questions` make a thread (a worker's reply asks `questions[]`; the operator's next message answers them); `retryRequestedAt` is contract v1.9's retry trigger */
@@ -82,6 +85,8 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
     startHop: (projectId: string, input: { cardId?: string; messageId?: string; workerId: string; runId?: string; claim?: string }) =>
       call<Hop>("POST", `/v1/projects/${enc(projectId)}/hops`, actor, input),
     claimHop: (hopId: string, claim: string) => call<Hop>("PATCH", `/v1/hops/${enc(hopId)}`, actor, { claim }),
+    /** contract v1.11: "this hop's stream is alive". No body — the core stamps the time and throttles to one write per 60 s (still 200). 409 `hop_not_running` once it ended. */
+    heartbeat: (hopId: string) => call<{ lastActivityAt: string }>("POST", `/v1/hops/${enc(hopId)}/heartbeat`, actor),
     finishHop: (hopId: string, finish: Finish) => call<Hop>("PATCH", `/v1/hops/${enc(hopId)}`, actor, finish),
   };
 }

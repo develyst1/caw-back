@@ -44,10 +44,11 @@ describe("probeHooks", () => {
   });
 });
 
-// Needs the real workspace (CAW_WORKSPACE_ROOT); without it this test is SKIPPED and bun says so — it is not a pass.
+// Needs the real workspace. The test preload deletes every key `.env.example` lists, so CAW_WORKSPACE_ROOT never reaches a test: this one reads
+// the test-only key CAW_TEST_WORKSPACE_ROOT. Without it the test is SKIPPED and bun says so — it is not a pass.
 describe("the real guard hooks", () => {
-  const WS = process.env.CAW_WORKSPACE_ROOT || "";
-  test.skipIf(WS === "")("each real hook is executable and blocks its probe with exit 2 (jq and perl present on this machine)", async () => {
+  const WS = process.env.CAW_TEST_WORKSPACE_ROOT || "";
+  test.skipIf(WS === "")("each real hook is executable and blocks its probe with exit 2 (jq and perl present on this machine) — set CAW_TEST_WORKSPACE_ROOT to run it", async () => {
     const config = loadConfig({ CAW_WORKSPACE_ROOT: WS });
     await probeHooks(config.hooks);
   });

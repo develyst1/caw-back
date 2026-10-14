@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildChatPrompt, buildPrompt, loadSkills, threadOf, writeSkillsFile } from "./prompt";
 
-const worker = { id: "w-1", name: "Blew", role: "BE", skills: ["role-be"] };
+const worker = { id: "w-1", name: "Blew", roles: ["BE"], skills: ["role-be"] };
 const card = { id: "c-1", number: 7, title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004" };
 
 describe("buildPrompt (SPEC-C-003 § 2)", () => {
@@ -127,5 +127,19 @@ describe("the follow-up in a thread (TASK-C-036)", () => {
     for (const thread of [undefined, { original: "x", questions: ["q"] }]) {
       expect(buildChatPrompt({ worker, messageId: "m", projectId: "p", thread })).toMatch(/reply[^\n]*mandatory[^\n]*blocks|if you cannot[^\n]*reply[^\n]*what blocks/i);
     }
+  });
+});
+
+describe("the worker's roles in the prompt (TASK-C-037, contract v1.10)", () => {
+  const two = { id: "w-2", name: "ฝน", roles: ["FE", "BE"], skills: ["role-fe", "role-be"] };
+  test("the card prompt prints every role joined with ' + '", () => {
+    expect(buildPrompt({ worker: two, card, projectId: "p-1" })).toContain("คุณคือ ฝน (FE + BE) ทีมงาน AI ใน CAW");
+  });
+  test("the chat prompt prints every role joined with ' + '", () => {
+    expect(buildChatPrompt({ worker: two, messageId: "m-1", projectId: "p-1" })).toContain("คุณคือ ฝน (FE + BE) ผู้รับแชตของโปรเจกต์ใน CAW");
+  });
+  test("one role prints as before", () => {
+    expect(buildPrompt({ worker, card, projectId: "p-1" })).toContain("คุณคือ Blew (BE) ทีมงาน AI ใน CAW");
+    expect(buildChatPrompt({ worker, messageId: "m-1", projectId: "p-1" })).toContain("คุณคือ Blew (BE) ผู้รับแชตของโปรเจกต์ใน CAW");
   });
 });
