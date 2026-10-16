@@ -150,7 +150,7 @@ async function recordRefusedHandOff(db: Db, projectId: string, actor: Actor,
   const unknown = Symbol("unknown worker");
   try {
     await writeDecided(db, projectId, (s) => {
-      if (!s.workers.some((w) => w.id === r.toWorkerId)) throw unknown;
+      if (!s.workers.some((w) => w.id === r.toWorkerId && w.deletedAt === null)) throw unknown; // a deleted worker is unknown too (v1.14)
       return { type: "card.handoff_refused", projectId, actor, at: now(), data: { cardId: r.cardId, noteId: r.noteId, from: r.details.from, to: r.toWorkerId, allowed: r.details.allowed, text: r.text } };
     });
   } catch (e) {

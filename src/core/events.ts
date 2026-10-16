@@ -17,6 +17,8 @@ export const EVENT_TYPES = [
   "worker.updated",
   // v1.11 (D-066): a running hop is still alive — the core stamps the time, throttled to one per 60 s
   "hop.heartbeat",
+  // v1.14 (D-081): a worker is deleted (kept, with deletedAt — history still names them)
+  "worker.deleted",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -24,10 +26,12 @@ export type EventType = (typeof EVENT_TYPES)[number];
 export type Actor = "operator" | `worker:${string}` | `runner:${string}`;
 
 type Header = { projectId: string | null; actor: string; at: string /* ISO-8601, server-made */ };
-type WorkerData = { id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string };
+/** v1.12: three short ids picked on the screen — the core checks their shape, never a list */
+export type Avatar = { body: string; color: string; eyes: string };
+type WorkerData = { id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string; avatar?: Avatar | null };
 /** what `worker.created` / `worker.combined` carried before v1.10: one `role`. The reducer reads it as `roles: [role]`; the events are never rewritten. */
 type LegacyWorkerData = Omit<WorkerData, "roles"> & { role: string };
-export type WorkerPatch = Partial<Pick<WorkerData, "name" | "roles" | "skills" | "model" | "effort">>;
+export type WorkerPatch = Partial<Pick<WorkerData, "name" | "roles" | "skills" | "model" | "effort" | "avatar">>;
 export type CardStatus = "todo" | "doing" | "review" | "done" | "stuck";
 export type Mode = "manual" | "dispatcher";
 export type HopOutcome = "commented" | "handed_off" | "status" | "asked" | "failed" | "stopped" | "interrupted" | "replied" | "proposed" | "amended" | "proposed_and_amended";
@@ -46,6 +50,7 @@ export type CawEvent = Header & (
   | { type: "worker.created"; data: WorkerData | LegacyWorkerData }
   | { type: "worker.combined"; data: (WorkerData | LegacyWorkerData) & { combinedFrom: [string, string] } }
   | { type: "worker.updated"; data: { id: string } & WorkerPatch }
+  | { type: "worker.deleted"; data: { id: string } }
   | { type: "chain.member_added"; data: { workerId: string } }
   | { type: "chain.member_removed"; data: { workerId: string; reassignTo: string | null } }
   | { type: "chain.edge_added" | "chain.edge_removed"; data: { from: string; to: string } }

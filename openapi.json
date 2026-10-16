@@ -2,6 +2,33 @@
   "components": {
     "parameters": {},
     "schemas": {
+      "Avatar": {
+        "additionalProperties": false,
+        "description": "a worker's chosen face; null on the worker = not chosen (the screen derives one from the name)",
+        "properties": {
+          "body": {
+            "pattern": "^[a-z0-9-]{1,24}$",
+            "type": "string"
+          },
+          "color": {
+            "pattern": "^[a-z0-9-]{1,24}$",
+            "type": "string"
+          },
+          "eyes": {
+            "pattern": "^[a-z0-9-]{1,24}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body",
+          "color",
+          "eyes"
+        ],
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "Card": {
         "properties": {
           "anchor": {
@@ -866,12 +893,22 @@
       },
       "Worker": {
         "properties": {
+          "avatar": {
+            "$ref": "#/components/schemas/Avatar"
+          },
           "combinedFrom": {
             "items": {
               "type": "string"
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "deletedAt": {
+            "description": "set when the operator deleted the worker (v1.14); the list still shows them so history can name them — screens hide them from every picker",
+            "type": [
+              "string",
               "null"
             ]
           },
@@ -941,7 +978,9 @@
           "skills",
           "model",
           "effort",
-          "combinedFrom"
+          "avatar",
+          "combinedFrom",
+          "deletedAt"
         ],
         "type": "object"
       }
@@ -1071,7 +1110,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -1362,7 +1401,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -1594,7 +1633,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -1811,7 +1850,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -1878,7 +1917,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -1997,7 +2036,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -2071,7 +2110,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -2213,7 +2252,7 @@
               }
             }
           },
-          "description": "a confirmed Blueprint version",
+          "description": "a confirmed Blueprint version — one CAW project per Blueprint project: 409 already_exists { id } when one exists, at any version (the project follows newer versions itself)",
           "required": true
         },
         "responses": {
@@ -2265,7 +2304,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           },
           "502": {
             "content": {
@@ -2832,7 +2871,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -2994,7 +3033,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -3076,7 +3115,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -3475,7 +3514,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -4119,7 +4158,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -4277,7 +4316,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           },
           "422": {
             "content": {
@@ -4385,7 +4424,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -4422,6 +4461,9 @@
             "application/json": {
               "schema": {
                 "properties": {
+                  "avatar": {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
                   "effort": {
                     "enum": [
                       "low",
@@ -4534,7 +4576,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
@@ -4626,12 +4668,69 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }
     },
     "/v1/workers/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted — kept with deletedAt set"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "operator_only · not_your_card · not_your_message"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
+          }
+        }
+      },
       "patch": {
         "parameters": [
           {
@@ -4648,6 +4747,9 @@
             "application/json": {
               "schema": {
                 "properties": {
+                  "avatar": {
+                    "$ref": "#/components/schemas/Avatar"
+                  },
                   "effort": {
                     "enum": [
                       "low",
@@ -4753,7 +4855,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"
           }
         }
       }

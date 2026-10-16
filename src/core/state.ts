@@ -18,7 +18,7 @@ const projectOf = (r: typeof projects.$inferSelect): ProjectState => ({
   entryWorkerId: r.entryWorkerId, createdAt: iso(r.createdAt),
 });
 const workerOf = (r: typeof workers.$inferSelect): WorkerState => ({
-  id: r.id, name: r.name, roles: r.roles, skills: r.skills, model: r.model, effort: r.effort, combinedFrom: r.combinedFrom, createdAt: iso(r.createdAt),
+  id: r.id, name: r.name, roles: r.roles, skills: r.skills, model: r.model, effort: r.effort, avatar: r.avatar ?? null, deletedAt: r.deletedAt && iso(r.deletedAt), combinedFrom: r.combinedFrom, createdAt: iso(r.createdAt),
 });
 const cardOf = (r: typeof cards.$inferSelect): CardState => ({
   id: r.id, projectId: r.projectId, number: r.number, kind: r.kind as CardState["kind"], title: r.title, todo: r.todo, status: r.status as CardState["status"],
@@ -86,7 +86,8 @@ function diff<T>(before: T[], after: T[], key: (x: T) => string) {
 export async function saveState(tx: Tx, before: State, after: State): Promise<void> {
   // parents before children (foreign keys): workers → project → cards → chat → runs → hops → proposals → deps / notes → chain
   for (const w of diff(before.workers, after.workers, (w) => w.id).upsert) {
-    await tx.insert(workers).values({ ...w, createdAt: new Date(w.createdAt) }).onConflictDoUpdate({ target: workers.id, set: { ...w, createdAt: new Date(w.createdAt) } });
+    const row = { ...w, createdAt: new Date(w.createdAt), deletedAt: w.deletedAt === null ? null : new Date(w.deletedAt) };
+    await tx.insert(workers).values(row).onConflictDoUpdate({ target: workers.id, set: row });
   }
   if (after.project && !same(before.project, after.project)) {
     const row = { ...after.project, createdAt: new Date(after.project.createdAt) };

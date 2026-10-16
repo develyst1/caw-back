@@ -143,3 +143,21 @@ describe("the worker's roles in the prompt (TASK-C-037, contract v1.10)", () => 
     expect(buildChatPrompt({ worker, messageId: "m-1", projectId: "p-1" })).toContain("คุณคือ Blew (BE) ผู้รับแชตของโปรเจกต์ใน CAW");
   });
 });
+
+describe("real line breaks in the worker's text (TASK-C-039, D-077)", () => {
+  const count = (hay: string, needle: string) => hay.split(needle).length - 1;
+  test("the chat prompt asks for real new lines in `text`, once, and names the two characters backslash + n", () => {
+    const p = buildChatPrompt({ worker, messageId: "m-1", projectId: "p-1" });
+    const line = "   - Write line breaks as real new lines in `text` — never the two characters \\n.";
+    expect(count(p, line)).toBe(1);
+    expect(p).toContain("never the two characters \\n"); // backslash + n, as the model reads it
+    expect(p).not.toContain("never the two characters \\\\n"); // not a doubled backslash
+    expect(p.indexOf(line)).toBeGreaterThan(p.indexOf("`reply` is mandatory")); // a sub-line of step 6
+  });
+  test("the card prompt has rule 5 for `comment` and `ask_operator` text, once", () => {
+    const p = buildPrompt({ worker, card, projectId: "p-1" });
+    const rule = "5. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.";
+    expect(count(p, rule)).toBe(1);
+    expect(p.indexOf(rule)).toBeGreaterThan(p.indexOf("4. If you cannot go on"));
+  });
+});

@@ -16,7 +16,7 @@ test("POST /v1/workers: 201 Worker; model / effort default by role (PM·SA·QA o
   expect(await got("other")).toEqual(["sonnet", "medium"]);
   expect(await got("BE", { model: "haiku", effort: "high" })).toEqual(["haiku", "high"]);
   const w = await mkWorker(call, "Jason", "BE", ["role-be", "workforce-protocol"]);
-  expect(w).toEqual({ id: w.id, name: "Jason", roles: ["BE"], role: "BE", skills: ["role-be", "workforce-protocol"], model: "sonnet", effort: "medium", combinedFrom: null });
+  expect(w as object).toEqual({ id: w.id, name: "Jason", roles: ["BE"], role: "BE", skills: ["role-be", "workforce-protocol"], model: "sonnet", effort: "medium", combinedFrom: null, avatar: null, deletedAt: null });
   expect((await call("GET", "/v1/workers")).json.workers.map((x: any) => x.name)).toContain("Jason");
 });
 
@@ -44,7 +44,7 @@ test("AC-5 combine: skills = union (order kept, no repeats) · the stronger mode
   const b = await mkWorker(call, "Ben", "FE", ["s2", "s3"], { model: "haiku", effort: "high" });
   const r = await call("POST", "/v1/workers/combine", { name: "AnnBen", workerIds: [a.id, b.id] });
   expect(r.status).toBe(201);
-  expect(r.json).toEqual({ id: r.json.id, name: "AnnBen", roles: ["other"], role: "other", skills: ["s1", "s2", "s3"], model: "opus", effort: "high", combinedFrom: [a.id, b.id] });
+  expect(r.json).toEqual({ id: r.json.id, name: "AnnBen", roles: ["other"], role: "other", skills: ["s1", "s2", "s3"], model: "opus", effort: "high", combinedFrom: [a.id, b.id], avatar: null, deletedAt: null });
   const names = (await call("GET", "/v1/workers")).json.workers.map((w: any) => w.name).sort();
   expect(names).toEqual(["Ann", "AnnBen", "Ben"]);
   const c = await mkWorker(call, "Cat", "BE", ["s9"], { model: "haiku", effort: "low" });

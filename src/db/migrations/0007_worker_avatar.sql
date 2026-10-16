@@ -1,0 +1,1 @@
+ALTER TABLE "caw"."workers" ADD COLUMN "avatar" jsonb;

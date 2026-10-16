@@ -1,5 +1,5 @@
 // Projects (SPEC-A-008 § API): made from a confirmed Blueprint version; CAW keeps ids and numbers, never spec content.
-import { asc, desc, sql } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
 import { rebuildCheck } from "../core/rebuild";
 import type { ProjectState } from "../core/reduce";
@@ -21,9 +21,11 @@ export async function createProject(db: Db, blueprint: Blueprint, actor: Actor, 
   if (!(await blueprint.getVersion(input.blueprintProjectId, input.version))) {
     throw new ApiError(409, "version_not_confirmed", `version ${input.version} of that Blueprint project is not a confirmed version`);
   }
+  // v1.15 (D-082): one CAW project per Blueprint project, at ANY version — a newer version is followed by the project that exists
+  // (latestSeenVersion), not by a second project. Older duplicates may exist; the answer names the one with the highest version, then the newest.
   const [existing] = await db.select({ id: projects.id }).from(projects)
-    .where(sql`${projects.blueprintProjectId} = ${input.blueprintProjectId} and ${projects.version} = ${input.version}`);
-  if (existing) throw new ApiError(409, "already_exists", "a CAW project already exists for that version", { id: existing.id });
+    .where(eq(projects.blueprintProjectId, input.blueprintProjectId)).orderBy(desc(projects.version), desc(projects.createdAt)).limit(1);
+  if (existing) throw new ApiError(409, "already_exists", "a CAW project already exists for that Blueprint project", { id: existing.id });
   const id = crypto.randomUUID();
   const { state } = await writeEvent(db, {
     type: "project.created", projectId: id, actor, at: new Date().toISOString(),

@@ -58,7 +58,7 @@ test("lists the tools with their input schemas — the six card tools (the chat 
 
 test("my_cards: the worker's own cards, workable first, across projects — or one project; nobody else's", async () => {
   const w = await world();
-  const second = (await w.call("POST", "/v1/projects", { blueprintProjectId: (await import("../helpers/fake-blueprint")).BP_PROJECT, version: 2 })).json;
+  const second = (await w.call("POST", "/v1/projects", { blueprintProjectId: (await import("../helpers/fake-blueprint")).BP_PROJECT_2, version: 1 })).json; // a second Blueprint project (v1.15: one CAW project each)
   await w.call("POST", `/v1/projects/${second.id}/chain/members`, { workerId: w.a.id });
   const waiting = (await newCard(w.call, w.project.id, { assigneeId: w.a.id, dependsOn: [w.c1.id], title: "รอ c1" })).json; // not workable
   const other = (await newCard(w.call, second.id, { assigneeId: w.a.id, title: "โปรเจกต์สอง" })).json;
@@ -211,4 +211,49 @@ test("CAW_WORKER_ID is required: without it the server refuses to start — one 
     expect([r.value, r.code, r.lines]).toEqual([r.value, 1, 1]);
     expect(r.first).toContain("CAW_WORKER_ID");
   }
+});
+
+// ---- TASK-A-088 / contract v1.13 (D-078): the MCP `comment` turns a typed backslash + n into a real line break; nothing else does ----
+const BS_N = "\\n"; // the two characters backslash and n, as the model types them (the trace in TASK-C-039)
+const notesOf = async (w: Awaited<ReturnType<typeof world>>) => ((await w.call("GET", `/v1/cards/${w.c1.id}/context`)).json.notes as { text: string; type: string }[]).map((n) => n.text);
+
+test("v1.13: MCP comment with `a\\n\\nb` (backslash-n twice) stores a, two real line breaks, b — read back through the API", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const typed = `a${BS_N}${BS_N}b`;
+  expect(typed).toHaveLength(6); // a, backslash, n, backslash, n, b — what the model sends: no real line feed in it
+  const note = await call("comment", { cardId: w.c1.id, text: typed });
+  expect(note.isError).toBe(false);
+  expect(note.json.text).toBe("a\n\nb");
+  expect(await notesOf(w)).toEqual(["a\n\nb"]);
+  const mixed = await call("comment", { cardId: w.c1.id, text: `บรรทัดแรก${BS_N}บรรทัดสอง\nบรรทัดสามจริง${BS_N}` }); // typed pairs and a real line feed together
+  expect(mixed.json.text).toBe("บรรทัดแรก\nบรรทัดสอง\nบรรทัดสามจริง\n");
+});
+
+test("v1.13: MCP comment text without a backslash-n pair is stored byte for byte (Thai, real newline, tab, other backslashes, a lone backslash)", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const texts = ["ข้อสังเกตธรรมดา", "สองบรรทัด\nจริง\tและแท็บ", "path C:\\temp\\x and a tab escape \\t and a lone \\", "  spaces  kept  ", "n alone, slash/n, \\ n"];
+  for (const t of texts) expect((await call("comment", { cardId: w.c1.id, text: t })).json.text).toBe(t);
+  expect(await notesOf(w)).toEqual(texts);
+});
+
+test("v1.13: the HTTP API stores text as sent — the operator's own comment with a literal backslash-n pair is unchanged", async () => {
+  const w = await world();
+  const r = await w.call("POST", `/v1/cards/${w.c1.id}/comments`, { text: `a${BS_N}b` }, "operator");
+  expect([r.status, r.json.text]).toEqual([201, `a${BS_N}b`]);
+  expect(await notesOf(w)).toEqual([`a${BS_N}b`]);
+});
+
+test("v1.13 scope: hand_off and ask_operator are NOT converted (D-078 asked for reply and comment only) — asserted so nobody widens it by accident", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const handed = await call("hand_off", { cardId: w.c1.id, toWorkerId: w.b.id, text: `ส่ง${BS_N}ต่อ` });
+  expect(handed.isError).toBe(false);
+  expect(await notesOf(w)).toContain(`ส่ง${BS_N}ต่อ`); // the hand-off note keeps its literal pair
+  const w2 = await world();
+  const { call: call2 } = await connect(w2.app, w2.a.id, w2.hop.id);
+  const q = await call2("ask_operator", { cardId: w2.c1.id, text: `ห้อง${BS_N}ใหญ่ไหม`, proposedDefault: `ต้อง${BS_N}`, cases: [`เล็ก${BS_N}`, "ใหญ่"] });
+  expect(q.isError).toBe(false);
+  expect(q.json.question).toEqual({ text: `ห้อง${BS_N}ใหญ่ไหม`, proposedDefault: `ต้อง${BS_N}`, cases: [`เล็ก${BS_N}`, "ใหญ่"] });
 });

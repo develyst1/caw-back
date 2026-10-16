@@ -15,7 +15,7 @@ export const errors = {
   400: errorContent("validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"),
   403: errorContent("operator_only · not_your_card · not_your_message"),
   404: errorContent("not_found · blueprint_project_not_found"),
-  409: errorContent("version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running"),
+  409: errorContent("version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running"),
   422: errorContent("anchor_not_in_version · version_not_confirmed · anchor_not_located"),
   502: errorContent("blueprint_unreachable"),
 } as const;

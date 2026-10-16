@@ -10,14 +10,17 @@ const at = (name: string) => timestamp(name, { withTimezone: true, mode: "date" 
 
 export const workers = caw.table("workers", {
   id: uuid("id").primaryKey(),
-  name: text("name").notNull().unique(),
+  name: text("name").notNull(), // unique among the LIVE workers only — see workers_name_live below (v1.14)
   roles: text("roles").array().notNull(), // v1.10: ≥ 1 of the seven, in the order picked (the single `role` column is gone — migration 0005)
   skills: text("skills").array().notNull(),
   model: text("model").notNull(),
   effort: text("effort").notNull(),
+  avatar: jsonb("avatar").$type<{ body: string; color: string; eyes: string }>(), // v1.12: null = not chosen (the screen derives a face; nothing derived is stored)
+  deletedAt: at("deleted_at"), // v1.14: set when the operator deletes the worker; the row stays (hops and cards point at it)
   combinedFrom: uuid("combined_from").array(),
   createdAt: at("created_at").notNull(),
 }, (t) => [
+  uniqueIndex("workers_name_live").on(t.name).where(sql`${t.deletedAt} is null`),
   check("workers_name_length", sql`char_length(${t.name}) between 1 and 40`),
   check("workers_roles", sql`cardinality(${t.roles}) >= 1 AND ${t.roles} <@ ARRAY['PM','BA','SA','FE','BE','QA','other']::text[]`),
   check("workers_skills_not_empty", sql`cardinality(${t.skills}) >= 1`),

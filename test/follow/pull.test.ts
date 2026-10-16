@@ -3,6 +3,7 @@
 // (v2 changed STEP-004, v3 changed STEP-001); a synthetic feed (same shape) is used only where a test needs a case the recording lacks.
 import { expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
+import { writeEvent } from "../../src/core/write";
 import { events, followState, projects } from "../../src/db/schema";
 import { newCard, setup } from "../helpers/api";
 import { BP_PROJECT } from "../helpers/fake-blueprint";
@@ -97,9 +98,12 @@ test("Blueprint down: no throw, ONE codes-only log line, nothing changes; the ne
   expect(w.logs).toHaveLength(1);
 });
 
-test("push: POST /v1/notify answers 202 {} at once (no actor needed) and the same pull runs for every CAW project of that Blueprint project", async () => {
+test("push: POST /v1/notify answers 202 {} at once (no actor needed) and the same pull runs for every CAW project of that Blueprint project — the LEGACY duplicates (v1.15: the route no longer makes a second one)", async () => {
   const w = await world();
-  const second = (await w.call("POST", "/v1/projects", { blueprintProjectId: BP_PROJECT, version: 2 })).json; // a second CAW project, from v2
+  // a second CAW project of the same Blueprint project, from v2: written as the event (the HTTP route refuses it since v1.15, but projects made before then exist)
+  const secondId = crypto.randomUUID();
+  await writeEvent(w.db, { type: "project.created", projectId: secondId, actor: "operator", at: new Date().toISOString(), data: { id: secondId, name: w.project.name, blueprintProjectId: BP_PROJECT, version: 2 } });
+  const second = { id: secondId };
   const a = await w.card("STEP-004");
   const onSecond = (await newCard(w.call, second.id, { anchor: { key: "STEP-001", version: 2 } })).json;
   const r = await w.call("POST", "/v1/notify", { event: "version.confirmed", projectId: BP_PROJECT, version: 3, confirmedAt: "2026-10-13T10:00:00.000Z" }, null);

@@ -50,6 +50,20 @@
       "when": 1791972726746,
       "tag": "0006_hop_heartbeat",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791974986839,
+      "tag": "0007_worker_avatar",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792121252638,
+      "tag": "0008_worker_delete",
+      "breakpoints": true
     }
   ]
 }

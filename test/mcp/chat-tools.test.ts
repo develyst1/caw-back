@@ -127,3 +127,38 @@ test("the tools carry the API's rules as tool errors: no CAW_HOP_ID → hop_requ
   expect([unlocated.isError, unlocated.json.error.code, unlocated.json.error.details]).toEqual([true, "anchor_not_located", { keys: ["STEP-004"] }]);
   void events;
 });
+
+// ---- TASK-A-088 / contract v1.13 (D-078): the MCP `reply` turns a typed backslash + n into a real line break; the HTTP API does not ----
+const BS_N = "\\n"; // the two characters backslash and n, as the model types them
+const chatTexts = async (w: Awaited<ReturnType<typeof world>>) => ((await w.call("GET", `${w.P}/chat`)).json.messages as { text: string; author: string }[]);
+
+test("v1.13: MCP reply with `a\\n\\nb` stores a chat message with two real line breaks", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const typed = `ขอบคุณครับ${BS_N}${BS_N}มีคำถามหนึ่งข้อ${BS_N}ห้องใหญ่ไหม`;
+  const r = await call("reply", { messageId: w.msg.id, text: typed });
+  expect(r.isError).toBe(false);
+  expect(r.json.text).toBe("ขอบคุณครับ\n\nมีคำถามหนึ่งข้อ\nห้องใหญ่ไหม");
+  const stored = (await chatTexts(w)).find((m) => m.author === `worker:${w.a.id}`)!;
+  expect(stored.text).toBe("ขอบคุณครับ\n\nมีคำถามหนึ่งข้อ\nห้องใหญ่ไหม");
+});
+
+test("v1.13: MCP reply text without a backslash-n pair is stored byte for byte (a real newline, a tab, other backslashes)", async () => {
+  const w = await world();
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const t = "สองบรรทัด\nจริง\tและแท็บ C:\\temp \\t \\ จบ";
+  const r = await call("reply", { messageId: w.msg.id, text: t });
+  expect(r.json.text).toBe(t);
+  expect((await chatTexts(w)).find((m) => m.author === `worker:${w.a.id}`)!.text).toBe(t);
+});
+
+test("v1.13: the HTTP API stores chat text as sent — the operator's message with a literal backslash-n pair is unchanged, and the question texts of a reply are not touched", async () => {
+  const w = await world();
+  const posted = await w.call("POST", `${w.P}/chat`, { text: `a${BS_N}b` });
+  expect([posted.status, posted.json.text]).toEqual([201, `a${BS_N}b`]);
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const questions = [{ text: `ห้อง${BS_N}ใหญ่`, proposedDefault: `ต้อง${BS_N}`, cases: [`เล็ก${BS_N}`] }];
+  const r = await call("reply", { messageId: w.msg.id, text: `ตอบ${BS_N}แล้ว`, questions });
+  expect(r.json.text).toBe("ตอบ\nแล้ว"); // the reply text converts …
+  expect(r.json.questions).toEqual(questions); // … only the text: the questions stay as sent (D-078 asked for the text)
+});

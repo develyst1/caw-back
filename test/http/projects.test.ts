@@ -3,7 +3,8 @@ import { expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { cards, events, workers } from "../../src/db/schema";
 import { createProject, setup } from "../helpers/api";
-import { BP_NAME, BP_PROJECT } from "../helpers/fake-blueprint";
+import { writeEvent } from "../../src/core/write";
+import { BP_NAME, BP_PROJECT, BP_PROJECT_2 } from "../helpers/fake-blueprint";
 
 const create = createProject;
 
@@ -140,4 +141,60 @@ test("AC-1 no spec content: after a project is created, no column of any caw tab
   // events.data carries the project's name too (the same allowed exception) and nothing else of the spec
   const [ev] = await db.select().from(events);
   expect(Object.keys(ev!.data as object).sort()).toEqual(["blueprintProjectId", "id", "name", "version"]);
+});
+
+// ---- TASK-A-092 / contract v1.15 (D-082): one CAW project per Blueprint project, at ANY version ----
+/** a project from before v1.15 (two CAW projects of one Blueprint project could exist): written as the event, through the normal write path */
+async function legacyProject(db: Parameters<typeof writeEvent>[0], blueprintProjectId: string, version: number): Promise<string> {
+  const id = crypto.randomUUID();
+  await writeEvent(db, { type: "project.created", projectId: id, actor: "operator", at: new Date().toISOString(), data: { id, name: BP_NAME, blueprintProjectId, version } });
+  return id;
+}
+const projectCount = async (call: (m: string, p: string) => Promise<{ json: any }>) => ((await call("GET", "/v1/projects")).json.projects as any[]).length;
+
+test("v1.15: POST for v1, then POST for v2 of the SAME Blueprint project → 409 already_exists with the first project's id; nothing is written", async () => {
+  const { call, db } = await setup();
+  const first = await create(call, { version: 1 });
+  expect(first.status).toBe(201);
+  const eventsBefore = (await db.select().from(events)).length;
+  const second = await create(call, { version: 2 });
+  expect([second.status, second.json.error.code, second.json.error.details]).toEqual([409, "already_exists", { id: first.json.id }]);
+  expect((await db.select().from(events)).length).toBe(eventsBefore);
+  expect(await projectCount(call)).toBe(1);
+  const v3 = await create(call, { version: 3 });
+  expect([v3.status, v3.json.error.details]).toEqual([409, { id: first.json.id }]); // any version, not only v2
+});
+
+test("v1.15: a DIFFERENT Blueprint project still gets its own CAW project (201)", async () => {
+  const { call } = await setup();
+  const one = await create(call, { version: 1 });
+  const two = await create(call, { blueprintProjectId: BP_PROJECT_2, version: 1 });
+  expect([one.status, two.status]).toEqual([201, 201]);
+  expect(two.json.id).not.toBe(one.json.id);
+  const again = await create(call, { blueprintProjectId: BP_PROJECT_2, version: 2 });
+  expect([again.status, again.json.error.details]).toEqual([409, { id: two.json.id }]); // the second Blueprint project is held to the same rule
+  expect(await projectCount(call)).toBe(2);
+});
+
+test("v1.15: with two LEGACY projects of one Blueprint project (v1 and v2), POST v3 → 409 with the HIGHEST version's project id", async () => {
+  const { call, db } = await setup();
+  const v1 = await legacyProject(db, BP_PROJECT, 1);
+  const v2 = await legacyProject(db, BP_PROJECT, 2);
+  expect(await projectCount(call)).toBe(2); // the legacy duplicates are listed, untouched
+  const r = await create(call, { version: 3 });
+  expect([r.status, r.json.error.code, r.json.error.details]).toEqual([409, "already_exists", { id: v2 }]);
+  expect(v1).not.toBe(v2);
+  expect(await projectCount(call)).toBe(2); // nothing merged, nothing deleted, nothing added
+});
+
+test("v1.15: the older checks still come first — 400, then 404 blueprint_project_not_found, then 409 version_not_confirmed, and only then already_exists", async () => {
+  const { call } = await setup();
+  const first = await create(call, { version: 1 });
+  expect((await create(call, { version: 0 })).status).toBe(400);
+  const missing = await create(call, { blueprintProjectId: "00000000-0000-0000-0000-000000000099", version: 2 });
+  expect([missing.status, missing.json.error.code]).toEqual([404, "blueprint_project_not_found"]);
+  const unconfirmed = await create(call, { version: 9 }); // an unconfirmed version of a Blueprint project that already has a CAW project
+  expect([unconfirmed.status, unconfirmed.json.error.code]).toEqual([409, "version_not_confirmed"]);
+  const same = await create(call, { version: 1 });
+  expect([same.status, same.json.error.code, same.json.error.details]).toEqual([409, "already_exists", { id: first.json.id }]);
 });

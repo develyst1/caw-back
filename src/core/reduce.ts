@@ -9,7 +9,7 @@ export type ProjectState = {
   entryWorkerId: string | null; createdAt: string;
 };
 export type WorkerState = {
-  id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string; combinedFrom: string[] | null; createdAt: string;
+  id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string; avatar: { body: string; color: string; eyes: string } | null; deletedAt: string | null; /* v1.14: kept, not erased */ combinedFrom: string[] | null; createdAt: string;
 };
 export type CardState = {
   id: string; projectId: string; number: number; kind: "work" | "question"; title: string; todo: string; status: CardStatus;
@@ -89,11 +89,12 @@ export function reduce(state: State, event: CawEvent): State {
     }
     case "worker.created": {
       const { id, name, skills, model, effort } = event.data;
-      return { ...state, workers: [...state.workers, { id, name, roles: rolesOf(event.data), skills, model, effort, combinedFrom: null, createdAt: event.at }] };
+      const avatar = "avatar" in event.data && event.data.avatar ? { ...event.data.avatar } : null; // an event from before v1.12 has none
+      return { ...state, workers: [...state.workers, { id, name, roles: rolesOf(event.data), skills, model, effort, avatar, deletedAt: null, combinedFrom: null, createdAt: event.at }] };
     }
     case "worker.combined": {
       const { id, name, skills, model, effort, combinedFrom } = event.data;
-      return { ...state, workers: [...state.workers, { id, name, roles: rolesOf(event.data), skills, model, effort, combinedFrom: [...combinedFrom], createdAt: event.at }] };
+      return { ...state, workers: [...state.workers, { id, name, roles: rolesOf(event.data), skills, model, effort, avatar: null, deletedAt: null, combinedFrom: [...combinedFrom], createdAt: event.at }] };
     }
     // only what the event carries changes (v1.10): changing roles does not touch model / effort / skills
     case "worker.updated": {
@@ -101,6 +102,8 @@ export function reduce(state: State, event: CawEvent): State {
       const patch = Object.fromEntries(Object.entries(sent).filter(([, v]) => v !== undefined)); // a key left out is a field left alone
       return { ...state, workers: state.workers.map((w) => (w.id === id ? { ...w, ...patch } : w)) };
     }
+    case "worker.deleted":
+      return { ...state, workers: state.workers.map((w) => (w.id === event.data.id ? { ...w, deletedAt: event.at } : w)) };
     case "chain.member_added":
       return { ...state, members: [...state.members, event.data.workerId] };
     case "chain.member_removed": {
@@ -191,7 +194,9 @@ export function reduce(state: State, event: CawEvent): State {
       };
       // the runner has picked a retry up: the next hop on the message clears the request (v1.9)
       const chat = d.messageId === null ? state.chat : state.chat.map((m) => (m.id === d.messageId && m.retryRequestedAt !== null ? { ...m, retryRequestedAt: null } : m));
-      return { ...state, hops: [...state.hops, hop], chat };
+      // v1.14 (D-081): a card hop that starts on a todo card moves it to doing, inside this same event; no other status moves
+      const cards = d.cardId === null ? state.cards : state.cards.map((c) => (c.id === d.cardId && c.status === "todo" ? { ...c, status: "doing" as const, updatedAt: event.at } : c));
+      return { ...state, hops: [...state.hops, hop], chat, cards };
     }
     case "hop.heartbeat":
       return { ...state, hops: state.hops.map((h) => (h.id === event.data.hopId ? { ...h, lastActivityAt: event.at } : h)) };

@@ -10,6 +10,9 @@ import { z } from "zod";
 
 type Result = { content: { type: "text"; text: string }[]; isError?: true };
 const ok = (json: unknown): Result => ({ content: [{ type: "text", text: JSON.stringify(json) }] });
+// v1.13 (D-078): a model types the two characters backslash + n where it means a line break. `comment` and `reply` turn every such pair into a
+// real line feed before the API call; nothing else in the text changes. Only these two tools — the HTTP API and the core store text as sent.
+const lineBreaks = (text: string): string => text.replaceAll("\\n", "\n");
 const fail = (error: { code: string; message: string; details?: unknown }): Result => ({ isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] });
 
 // hopId = the worker's running hop (v1.5, D-054): sent as X-CAW-Hop on every call; without it every write answers hop_required
@@ -77,7 +80,7 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
     title: "Comment on a card",
     description: "Add a comment (a note) to a card assigned to you. Notes are never edited or deleted.",
     inputSchema: { cardId: z.string().min(1), text: z.string().min(1).describe("1–8 000 characters") },
-  }, ({ cardId, text }) => run("POST", `/v1/cards/${id(cardId)}/comments`, { text }));
+  }, ({ cardId, text }) => run("POST", `/v1/cards/${id(cardId)}/comments`, { text: lineBreaks(text) }));
 
   server.registerTool("hand_off", {
     title: "Hand a card to the next worker",
@@ -144,7 +147,7 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
       proposalId: z.string().min(1).optional(), amendment: z.object({ blueprintMessageId: z.string().min(1) }).optional(),
     },
   }, ({ messageId, text, questions, proposalId, amendment }) =>
-    run("POST", `/v1/chat/${id(messageId)}/reply`, { text, ...(questions ? { questions } : {}), ...(proposalId ? { proposalId } : {}), ...(amendment ? { amendment } : {}) }));
+    run("POST", `/v1/chat/${id(messageId)}/reply`, { text: lineBreaks(text), ...(questions ? { questions } : {}), ...(proposalId ? { proposalId } : {}), ...(amendment ? { amendment } : {}) }));
 
   return server;
 }

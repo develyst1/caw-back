@@ -19,7 +19,7 @@ test("POST roles: [PM, BA] → 201, roles in the order sent, role = roles[0], mo
   const w = await world();
   const r = await w.post({ name: "Pam", roles: ["PM", "BA"], skills: ["role-pm", "role-ba"] });
   expect(r.status).toBe(201);
-  expect(r.json).toEqual({ id: r.json.id, name: "Pam", roles: ["PM", "BA"], role: "PM", skills: ["role-pm", "role-ba"], model: "opus", effort: "medium", combinedFrom: null });
+  expect(r.json).toEqual({ id: r.json.id, name: "Pam", roles: ["PM", "BA"], role: "PM", skills: ["role-pm", "role-ba"], model: "opus", effort: "medium", combinedFrom: null, avatar: null, deletedAt: null });
 });
 
 test("POST roles: the order is kept and role follows it · the strongest default of the roles wins · explicit model / effort win over defaults · BA alone is opus / medium", async () => {
@@ -40,7 +40,7 @@ test("POST with the old `role: QA` → roles [QA] (read as [role]), role QA, opu
   const w = await world();
   const r = await w.post({ name: "Quin", role: "QA", skills: ["role-qa"] });
   expect(r.status).toBe(201);
-  expect(r.json).toEqual({ id: r.json.id, name: "Quin", roles: ["QA"], role: "QA", skills: ["role-qa"], model: "opus", effort: "medium", combinedFrom: null });
+  expect(r.json).toEqual({ id: r.json.id, name: "Quin", roles: ["QA"], role: "QA", skills: ["role-qa"], model: "opus", effort: "medium", combinedFrom: null, avatar: null, deletedAt: null });
 });
 
 test("POST validation: roles [] · repeated · outside the enum · both role and roles · neither → 400 validation, and nothing is written", async () => {

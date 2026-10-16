@@ -8,7 +8,7 @@ import { writeDecided } from "../core/write";
 import type { Db } from "../db/client";
 import { requireOperator } from "../http/actor";
 import { ApiError, notFound } from "../http/errors";
-import { type Worker, workerView } from "../workers/service";
+import { isLive, type Worker, workerView } from "../workers/service";
 
 export type Chain = { members: Worker[]; edges: { from: string; to: string }[]; entryWorkerId: string | null };
 
@@ -34,7 +34,7 @@ const write = async (db: Db, actor: Actor, projectId: string, decide: Parameters
 
 export const addMember = (db: Db, actor: Actor, projectId: string, workerId: string) => write(db, actor, projectId, (s) => {
   project(s);
-  if (!s.workers.some((w) => w.id === workerId)) throw notFound("worker");
+  if (!s.workers.some((w) => w.id === workerId && isLive(w))) throw notFound("worker"); // a deleted worker is unknown (v1.14)
   if (s.members.includes(workerId)) throw new ApiError(409, "already_member", "that worker is already in the chain");
   return { type: "chain.member_added", projectId, actor, at: now(), data: { workerId } };
 });
@@ -42,6 +42,9 @@ export const addMember = (db: Db, actor: Actor, projectId: string, workerId: str
 export const removeMember = (db: Db, actor: Actor, projectId: string, workerId: string, reassignTo: string | null) => write(db, actor, projectId, (s) => {
   const p = project(s);
   if (!s.members.includes(workerId)) throw notFound("chain member");
+  // v1.14 (D-081): not while a hop of theirs is running in this project — checked before is_entry and has_open_cards
+  const running = s.hops.find((h) => h.workerId === workerId && h.endedAt === null);
+  if (running) throw new ApiError(409, "hop_running", "this worker has a hop running — stop the run or wait for it to end", { hopId: running.id });
   if (p.entryWorkerId === workerId) throw new ApiError(409, "is_entry", "this worker is the chain's entry — set another entry first");
   const open = s.cards.filter((c) => c.assigneeId === workerId && c.status !== "done");
   if (reassignTo !== null) {

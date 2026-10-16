@@ -18,6 +18,7 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
     "2. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
     "3. No git writes (no add, commit, push, branch, checkout). No web. Stay inside your working folders.",
     "4. If you cannot go on without a decision, use `ask_operator` with your proposed default — do not guess.",
+    "5. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.",
   ].join("\n");
 }
 
@@ -84,6 +85,7 @@ export function buildChatPrompt(input: { worker: PromptWorker; messageId: string
     "4. Use `send_amendment` ONLY for what `locate` did not return (`notInSpec`), or when the request changes the spec itself — it asks Blueprint's chat to change the spec; do not invent a card for it.",
     "5. If you need decisions first, put ALL your questions in the one reply as `questions[]`, each with `text`, `proposedDefault` and `cases` — never one question at a time.",
     "6. Always end with exactly one `reply` in Thai. `reply` is mandatory — if you cannot do anything else, reply and say what blocks you.",
+    "   - Write line breaks as real new lines in `text` — never the two characters \\n.",
     "   - With a proposal the text contains: `{n} งาน ใช้ประมาณ {h} ก้าว` (n = the number of cards, h = the sum of the hops) and you pass `proposalId`.",
     "   - With an amendment the text contains: `เรื่องนี้ยังไม่มีใน spec — ส่งไปเพิ่มใน Blueprint แล้ว` and the link, and you pass `amendment.blueprintMessageId`.",
     "",

@@ -7,7 +7,12 @@ const fixture = (name: string) => readFileSync(`${FIX}${name}.json`, "utf8");
 
 /** the Blueprint project id the fixtures were recorded for */
 export const BP_PROJECT = (JSON.parse(fixture("project-200")) as { project: { id: string } }).project.id;
+/** A SECOND Blueprint project for tests that need two different ones (D-082: one CAW project per Blueprint project). It is served the SAME
+ *  recorded answers as BP_PROJECT — only the id the caller uses differs; nothing here is invented. */
+export const BP_PROJECT_2 = "00000000-0000-4000-8000-0000000000b2";
 export const BP_NAME = (JSON.parse(fixture("project-200")) as { project: { name: string } }).project.name;
+
+const recorded = (id: string) => (id === BP_PROJECT_2 ? BP_PROJECT : id); // the second project is answered from the first one's recordings
 
 export function fakeBlueprint() {
   // `feed`: a SYNTHETIC change feed for one test (same shape as the recorded ones); null = serve the recorded feed-after-N.json.
@@ -24,13 +29,13 @@ export function fakeBlueprint() {
         const body = await req.json();
         mode.bodies.push({ path, body });
         const post = /^\/v1\/projects\/([^/]+)\/(locate|amendments)$/.exec(path);
-        if (!post || post[1] !== BP_PROJECT) return json("project-404", 404);
+        if (!post || recorded(post[1]!) !== BP_PROJECT) return json("project-404", 404);
         if (post[2] === "locate") return json(body.request.includes("ห้องใหญ่") ? "locate-room" : body.request.includes("ค้นหาห้อง") ? "locate-search" : "locate-none");
         return (body.about ?? []).includes("NOPE-999") ? json("amendment-400-about", 400) : json("amendment-201", 201); // the recorded Message, whatever `from` says
       }
       const m = /^\/v1\/projects\/([^/]+)(\/.*)?$/.exec(path);
       if (!m) return json("project-404", 404);
-      if (m[1] !== BP_PROJECT) return json("project-404", 404);
+      if (recorded(m[1]!) !== BP_PROJECT) return json("project-404", 404);
       const rest = m[2] ?? "";
       if (rest === "") return json("project-200");
       const exact = /^\/versions\/([123])$/.exec(rest);

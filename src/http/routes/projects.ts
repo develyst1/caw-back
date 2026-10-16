@@ -23,7 +23,7 @@ const EventSchema = z.object({
 export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) {
   app.openapi(createRoute({
     method: "post", path: "/v1/projects",
-    request: { body: { ...json(z.object({ blueprintProjectId: z.string().min(1), version: z.number().int().min(1) }), "a confirmed Blueprint version"), required: true } },
+    request: { body: { ...json(z.object({ blueprintProjectId: z.string().min(1), version: z.number().int().min(1) }), "a confirmed Blueprint version — one CAW project per Blueprint project: 409 already_exists { id } when one exists, at any version (the project follows newer versions itself)"), required: true } },
     responses: { 201: json(ProjectSchema, "created"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409], 502: errors[502] },
   }), async (c) => {
     requireOperator(c.get("actor"));
