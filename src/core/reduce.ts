@@ -1,12 +1,14 @@
 // The one reducer: (state, event) → state. Pure — no I/O, no clock, no ids of its own (they are in the event).
 // The write path applies it to the tables; a rebuild runs it over the stored events from `empty`. Same function, so the
 // tables and a rebuild cannot disagree except by someone writing the tables behind the events' back (AC-6).
-import type { CardStatus, CawEvent, ChatQuestion, HopOutcome, Mode, ProposalItem, StopReason } from "./events";
+import type { CardStatus, CawEvent, ChatQuestion, CodeMapInput, HopOutcome, Mode, ProposalItem, StopReason } from "./events";
 
+/** v1.16: the setup step's result. `updatedBy` = the writing worker's id; `confirmedAt` is cleared by every new save. */
+export type CodeMapState = CodeMapInput & { updatedAt: string; updatedBy: string; confirmedAt: string | null };
 export type ProjectState = {
   id: string; name: string; blueprintProjectId: string; version: number; latestSeenVersion: number;
-  mode: Mode; hopBudget: number; hopsUsed: number; workspace: { roots: string[] };
-  entryWorkerId: string | null; createdAt: string;
+  mode: Mode; hopBudget: number; hopsUsed: number; workspace: { roots: string[]; readOnly: string[] /* v1.16: ⊆ roots; the rest are writable */ };
+  entryWorkerId: string | null; codeMap: CodeMapState | null; createdAt: string;
 };
 export type WorkerState = {
   id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string; avatar: { body: string; color: string; eyes: string } | null; deletedAt: string | null; /* v1.14: kept, not erased */ combinedFrom: string[] | null; createdAt: string;
@@ -84,7 +86,7 @@ export function reduce(state: State, event: CawEvent): State {
       const d = event.data;
       return { ...state, project: {
         id: d.id, name: d.name, blueprintProjectId: d.blueprintProjectId, version: d.version, latestSeenVersion: d.version,
-        mode: "manual", hopBudget: 0, hopsUsed: 0, workspace: { roots: [] }, entryWorkerId: null, createdAt: event.at,
+        mode: "manual", hopBudget: 0, hopsUsed: 0, workspace: { roots: [], readOnly: [] }, entryWorkerId: null, codeMap: null, createdAt: event.at,
       } };
     }
     case "worker.created": {
@@ -179,7 +181,13 @@ export function reduce(state: State, event: CawEvent): State {
     case "project.mode_set":
       return { ...state, project: state.project && { ...state.project, mode: event.data.mode, hopBudget: event.data.hopBudget ?? state.project.hopBudget } };
     case "project.workspace_set":
-      return { ...state, project: state.project && { ...state.project, workspace: { roots: [...event.data.roots] } } };
+      return { ...state, project: state.project && { ...state.project, workspace: { roots: [...event.data.roots], readOnly: [...(event.data.readOnly ?? [])] } } };
+    case "project.code_map_saved": {
+      const { hopId: _hop, ...map } = event.data;
+      return { ...state, project: state.project && { ...state.project, codeMap: { ...map, updatedAt: event.at, updatedBy: event.actor.replace(/^worker:/, ""), confirmedAt: null } } };
+    }
+    case "project.code_map_confirmed":
+      return { ...state, project: state.project && state.project.codeMap && { ...state.project, codeMap: { ...state.project.codeMap, confirmedAt: event.at } } };
     case "run.started": {
       const d = event.data;
       return { ...state, runs: [...state.runs, { id: d.id, projectId: event.projectId!, mode: d.mode, hopBudget: d.hopBudget, startedAt: event.at, endedAt: null, stopReason: null, report: null }] };

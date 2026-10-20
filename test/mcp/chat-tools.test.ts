@@ -35,11 +35,11 @@ async function world() {
   return { ...s, ...chain, msg, hop, P: `/v1/projects/${chain.project.id}` };
 }
 
-test("listTools: the five chat tools join the six — eleven in all, each with its required inputs", async () => {
+test("listTools: the five chat tools join the six — eleven, and save_code_map (v1.16) makes twelve, each with its required inputs", async () => {
   const w = await world();
   const { client } = await connect(w.app, w.a.id, w.hop.id);
   const tools = (await client.listTools()).tools;
-  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "chat_context", "comment", "hand_off", "locate", "my_cards", "propose_cards", "reply", "send_amendment", "set_status"]);
+  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "chat_context", "comment", "hand_off", "locate", "my_cards", "propose_cards", "reply", "save_code_map", "send_amendment", "set_status"]);
   const req = (name: string) => ((tools.find((t) => t.name === name)!.inputSchema as { required?: string[] }).required ?? []).sort();
   expect(req("chat_context")).toEqual(["messageId"]);
   expect(req("locate")).toEqual(["projectId", "request"]);
@@ -161,4 +161,41 @@ test("v1.13: the HTTP API stores chat text as sent — the operator's message wi
   const r = await call("reply", { messageId: w.msg.id, text: `ตอบ${BS_N}แล้ว`, questions });
   expect(r.json.text).toBe("ตอบ\nแล้ว"); // the reply text converts …
   expect(r.json.questions).toEqual(questions); // … only the text: the questions stay as sent (D-078 asked for the text)
+});
+
+// ---- TASK-A-094 / SPEC-A-009 § R2a + Revision 1 (v1.16): save_code_map { folders, stack, commands, rules, questions, notes? } → PUT …/code-map ----
+const CODE_MAP = {
+  folders: [{ name: "mc2-front", kind: "fe", note: "Flutter" }, { name: "mc2-spec", kind: "other" }], stack: ["Flutter"],
+  commands: { run: ["bun run dev"], test: ["bun test"] }, rules: [], questions: [{ text: "ใช้ branch ไหน", proposedDefault: "main" }],
+};
+
+test("v1.16: save_code_map stores the structured map as the entry worker from its running chat hop (CAW_HOP_ID); the project shows it; the tool has the map's required keys", async () => {
+  const w = await world();
+  const { client, call } = await connect(w.app, w.a.id, w.hop.id);
+  const tool = (await client.listTools()).tools.find((t) => t.name === "save_code_map")!;
+  expect(tool.description).toBeString();
+  expect(((tool.inputSchema as { required?: string[] }).required ?? []).sort()).toEqual(["commands", "folders", "projectId", "questions", "rules", "stack"]);
+  const r = await call("save_code_map", { projectId: w.project.id, ...CODE_MAP });
+  expect(r.isError).toBe(false);
+  expect(r.json).toMatchObject({ ...CODE_MAP, updatedBy: w.a.id, confirmedAt: null });
+  expect((await w.call("GET", w.P)).json.codeMap).toEqual(r.json);
+});
+
+test("v1.16: save_code_map without a hop answers hop_required; with a bad map the tool schema refuses it before any API call; nothing is stored either way", async () => {
+  const w = await world();
+  const noHop = await connect(w.app, w.a.id);
+  const refused = await noHop.call("save_code_map", { projectId: w.project.id, ...CODE_MAP });
+  expect([refused.isError, refused.json.error.code]).toEqual([true, "hop_required"]);
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const bad = await call("save_code_map", { projectId: w.project.id, ...CODE_MAP, folders: [] });
+  expect(bad.isError).toBe(true);
+  expect((await w.call("GET", w.P)).json.codeMap).toBeNull();
+});
+
+test("v1.16: a non-entry worker's save_code_map is refused 403 not_entry_worker (the entry moved after its hop began)", async () => {
+  const w = await world();
+  await w.call("PUT", `${w.P}/chain/entry`, { workerId: w.b.id });
+  const { call } = await connect(w.app, w.a.id, w.hop.id);
+  const r = await call("save_code_map", { projectId: w.project.id, ...CODE_MAP });
+  expect([r.isError, r.json.error.code]).toEqual([true, "not_entry_worker"]);
 });

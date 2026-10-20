@@ -295,6 +295,47 @@ export function createRunner(deps: HopDeps & { instance: string }) {
   };
 }
 
+/** How often the runner says it is alive (contract v1.16 rev. 1: the core calls it running while the last check-in is <= 45 s old). */
+export const CHECK_IN_MS = 15_000;
+
+/** The runner's check-in (TASK-C-040): `running` at start and then on its OWN timer — not the poll loop, not a hop — and one `stopping` at a clean stop.
+ *  A failed check-in is logged once per failure streak (and once on recovery) and never stops the runner. `every` is the scheduler (default setInterval). */
+export function createCheckIn(o: {
+  api: { checkIn(state: "running" | "stopping"): Promise<void> }; log: (line: string) => void;
+  intervalMs?: number; stopTimeoutMs?: number; every?: (fn: () => void, ms: number) => () => void;
+}) {
+  const every = o.every ?? ((fn, ms) => { const t = setInterval(fn, ms); return () => clearInterval(t); });
+  let cancel: (() => void) | null = null;
+  let closed = false;
+  let failing = false;
+  let inFlight = false;
+  const send = async (state: "running" | "stopping") => {
+    try {
+      await o.api.checkIn(state);
+      if (failing) { failing = false; o.log("check-in is back"); }
+    } catch (e) {
+      if (!failing) { failing = true; o.log(`check-in failed: ${e instanceof RunnerApiError ? `${e.code} (${e.status})` : messageOf(e)} — the team shows as not running until it works; the runner goes on, and says so once more when it is back`); }
+      else if (state === "stopping") o.log(`check-in (stopping) failed: ${messageOf(e)}`);
+    }
+  };
+  return {
+    /** the first check-in is awaited (it is sent before the first tick), then the timer runs */
+    async start() {
+      await send("running");
+      cancel = every(() => { if (closed || inFlight) return; inFlight = true; void send("running").finally(() => { inFlight = false; }); }, o.intervalMs ?? CHECK_IN_MS);
+    },
+    /** clear the timer and send ONE `stopping`, waiting at most `stopTimeoutMs` (default 1 s) for it; a second call does nothing */
+    async stop() {
+      if (closed) return;
+      closed = true;
+      cancel?.();
+      const ms = o.stopTimeoutMs ?? 1000;
+      const answered = await Promise.race([send("stopping").then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), ms))]);
+      if (!answered) o.log(`check-in (stopping) did not answer within ${ms} ms — stopping anyway`);
+    },
+  };
+}
+
 if (import.meta.main) {
   let config;
   try { config = loadConfig(); await probeHooks(config.hooks); } catch (e) {
@@ -311,8 +352,10 @@ if (import.meta.main) {
 
   const live = new Set<Child>();
   let stopping = false;
+  const api = createApi(config.apiUrl, `runner:${instance}`);
+  const checkIn = createCheckIn({ api, log });
   const runner = createRunner({
-    api: createApi(config.apiUrl, `runner:${instance}`), config, tmpRoot, settingsFile, log, cursors: new Map(), instance, stopping: () => stopping, traceDir,
+    api, config, tmpRoot, settingsFile, log, cursors: new Map(), instance, stopping: () => stopping, traceDir,
     spawn: (cmd, opts) => { const c = bunSpawn(cmd, opts); live.add(c); void c.exited.finally(() => live.delete(c)); return c; },
   });
 
@@ -324,12 +367,14 @@ if (import.meta.main) {
     log(`${signal}: stopping ${live.size} child process(es)`);
     for (const c of live) c.kill();
     try { rmSync(tmpRoot, { recursive: true, force: true }); } catch (e) { log(`could not remove ${tmpRoot}: ${messageOf(e)}`); }
-    setTimeout(() => process.exit(0), 200);
+    // tell the core before going: the team shows as not running at once, not 45 s later. At most 1 s; a failure is only logged.
+    void checkIn.stop().finally(() => setTimeout(() => process.exit(0), 200));
   };
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
 
   log(`started — API ${config.apiUrl}, poll ${config.pollMs} ms, hop cap ${config.hopMaxMs} ms, workspace ${config.workspaceRoot}, traces ${traceDir}`);
+  await checkIn.start(); // before the first tick; then every 15 s on its own timer
   await runner.sweepStray();
   while (!stopping) {
     await runner.tick();

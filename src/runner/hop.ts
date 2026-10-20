@@ -1,13 +1,14 @@
 // Run ONE hop: one turn of one worker on one card, as a headless `claude -p` child (SPEC-C-003 § 2–3).
 // The hop row already exists (started by the screen or by the runner's restart rule); this finishes it, whatever happens.
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutcome, type Project, type Worker, RunnerApiError } from "./api";
+import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutcome, type Project, type Worker, RunnerApiError, readOnlyOf } from "./api";
 import type { RunnerConfig } from "./config";
-import { type Thread, buildChatPrompt, buildPrompt, loadSkills, threadOf, writeSkillsFile } from "./prompt";
+import { type Thread, buildChatPrompt, buildPrompt, folderNames, loadSkills, threadOf, writeSkillsFile } from "./prompt";
 import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
 import { redact } from "./redact";
+import { withReadGuard, withReadOnly } from "./settings";
 import { type Limit, StreamState } from "./stream";
 import { formatReset } from "./thai";
 import { toolSummary, writeTrace } from "./trace";
@@ -20,6 +21,8 @@ export const NOTES = {
   noResult: "ก้าวนี้ไม่ได้ทิ้งผลงานไว้",
   blocked: (worker: string, action: string) => `หยุดไว้: ${worker} พยายาม ${action} ซึ่งไม่อนุญาต`,
   interrupted: "ถูกขัดจังหวะเพราะตัวรันเริ่มใหม่",
+  /** `[team-proposed]` (TASK-C-042 Q2): a read outside the project's folders was refused n times and the hop went on */
+  readsRefused: (n: number) => `อ่านนอกโฟลเดอร์ถูกปฏิเสธ ${n} ครั้ง`,
   fault: (message: string) => `ตัวรันขัดข้อง: ${message}`,
   /** REQ-012: ถึงลิมิตการใช้งาน Claude — จะทำต่อได้หลัง {เวลา}; without a reset time only the part that needs none */
   limit: (resetsAt: number | null, now: Date) => `ถึงลิมิตการใช้งาน Claude${resetsAt === null ? "" : ` — จะทำต่อได้หลัง ${formatReset(resetsAt, now)}`}`,
@@ -72,6 +75,21 @@ export const bunSpawn: Spawner = (cmd, { cwd, env }) => {
 /** how often a hop's stream may tell the core it is alive (contract v1.11; the core itself writes at most once a minute) */
 const HEARTBEAT_MS = 30_000;
 
+/** how many read-guard refusals one hop may take before it is stopped: the setup step explores the folders, so a peek one step too far is told no; three is probing */
+const READ_GUARD_STOP_AT = 3;
+/** a hook block printed by our own read guard (`PreToolUse:<Read|Glob|Grep> hook error: [… read-guard.ts …]`) — the only block that is not a stop at once */
+const isReadGuardBlock = (b: { kind: string; text: string }) => b.kind === "hook" && /^PreToolUse:(Read|Glob|Grep) hook error:/.test(b.text.trim()) && b.text.includes("read-guard");
+
+/** The folders a hop may read: the project's roots and its own private folder — each as given and, when it differs, by its real path (macOS: /var → /private/var). */
+export function readableDirs(roots: readonly string[], hopDir: string): string[] {
+  const out: string[] = [];
+  for (const d of [...roots, hopDir]) {
+    out.push(d);
+    try { out.push(realpathSync(d)); } catch { /* not there (yet): the path as given is all there is */ }
+  }
+  return [...new Set(out)];
+}
+
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** What the child may see of the runner's environment: the login/shell basics only. Everything else — API keys, cloud credentials,
@@ -112,8 +130,11 @@ export function buildMcpConfig(apiUrl: string, workerId: string, hopId: string):
 }
 
 /** `--add-dir` and `--disallowedTools` take a LIST, so each is followed by another flag — never by the next positional. */
-/** a chat hop is a conversation, not coding: no built-in tool at all (`--tools ""`), and the coding ones denied by name as well (TASK-C-036 (c)) */
-const CHAT_DENY = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "WebFetch", "WebSearch"];
+/** A chat hop is a conversation, not coding (TASK-C-036 (c)); since TASK-C-041 it may also READ the project's folders for the setup step:
+ *  `--tools Read,Glob,Grep` and no shell, so nothing can be written. The writing and running tools are denied by name as well. With no folders
+ *  there is nothing to read: `--tools ""`, and Read / Glob / Grep are denied too. */
+const CHAT_READ_TOOLS = ["Read", "Glob", "Grep"];
+const CHAT_DENY = ["Bash", "Write", "Edit", "NotebookEdit", "Task", "WebFetch", "WebSearch"];
 
 export function buildArgs(a: { prompt: string; worker: Pick<Worker, "model" | "effort">; roots: string[]; settingsFile: string; mcpFile: string; skillsFile: string | null; chat?: boolean }): string[] {
   return [
@@ -125,9 +146,10 @@ export function buildArgs(a: { prompt: string; worker: Pick<Worker, "model" | "e
     "--setting-sources", "project",
     "--settings", a.settingsFile,
     "--mcp-config", a.mcpFile, "--strict-mcp-config",
-    ...(a.roots.length > 1 ? ["--add-dir", ...a.roots.slice(1)] : []),
-    ...(a.chat ? ["--tools", ""] : []),
-    "--disallowedTools", ...(a.chat ? CHAT_DENY : ["WebFetch", "WebSearch"]),
+    // a card hop runs IN the first root, so only the rest are added; a chat hop runs in its private folder, so every root is added
+    ...(a.chat ? (a.roots.length > 0 ? ["--add-dir", ...a.roots] : []) : a.roots.length > 1 ? ["--add-dir", ...a.roots.slice(1)] : []),
+    ...(a.chat ? ["--tools", a.roots.length > 0 ? CHAT_READ_TOOLS.join(",") : ""] : []),
+    "--disallowedTools", ...(a.chat ? (a.roots.length > 0 ? CHAT_DENY : [...CHAT_DENY, ...CHAT_READ_TOOLS]) : ["WebFetch", "WebSearch"]),
     ...(a.skillsFile ? ["--append-system-prompt-file", a.skillsFile] : []),
     "--no-session-persistence",
   ];
@@ -219,9 +241,12 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
   const dir = join(deps.tmpRoot, `hop-${hop.id}`);
   let spawnedPid: number | undefined;
   try {
-    const roots = project.workspace.roots;
-    // A chat hop works on no repo: it talks through MCP, so it needs no folder and is given none (see cwd below).
-    if (messageId === null && roots.length === 0) { log(`hop ${hop.id}: the project has no workspace folders — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.noRoots }); }
+    // Readable = roots; writable = roots − readOnly (D-100). A card hop works in the first WRITABLE root and reads the rest; a chat hop reads them all.
+    const readOnly = readOnlyOf(project.workspace);
+    const writable = project.workspace.roots.filter((r) => !readOnly.includes(r));
+    const roots = [...writable, ...project.workspace.roots.filter((r) => readOnly.includes(r))];
+    // A chat hop needs no folder to talk (MCP), but it READS the project's folders for the setup step (C-041): they are added, never its cwd (see below).
+    if (messageId === null && writable.length === 0) { log(`hop ${hop.id}: the project has no workspace folders — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.noRoots }); }
     const skills = loadSkills(config.workspaceRoot, worker.skills);
     if (!skills.ok) { log(`hop ${hop.id}: skill ${skills.missing} not found under ${config.workspaceRoot}/.claude/skills — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.skillMissing(skills.missing) }); }
 
@@ -230,8 +255,13 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const mcpFile = join(dir, "mcp.json");
     writeFileSync(mcpFile, JSON.stringify(buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
     const skillsFile = skills.text === "" ? null : writeSkillsFile(dir, skills.text);
-    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId) }) : buildPrompt({ worker, card: card!, projectId: project.id });
-    const args = buildArgs({ prompt, worker, roots: messageId !== null ? [] : roots, settingsFile: deps.settingsFile, mcpFile, skillsFile, chat: messageId !== null });
+    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id });
+    // EVERY hop gets its own settings file = the runner's base + the read fence (UP-3: reads only inside the roots and this hop's folder) + the read-only
+    // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
+    const settingsFile = join(dir, "settings.json");
+    const base = JSON.parse(readFileSync(deps.settingsFile, "utf8"));
+    writeFileSync(settingsFile, `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir)), null, 2)}\n`, { mode: 0o600 });
+    const args = buildArgs({ prompt, worker, roots: messageId !== null ? project.workspace.roots : roots, settingsFile, mcpFile, skillsFile, chat: messageId !== null });
 
     // A child must never be started by a runner that is already stopping: nothing would be left to kill it.
     if (deps.stopping?.()) { log(`hop ${hop.id}: runner is stopping — not started, left running for the next runner to interrupt`); return hop; }
@@ -241,6 +271,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
     const state = new StreamState();
     const end = { note: null as string | null };
+    let readRefusals = 0; // read-guard refusals so far (soft: counted and logged, the hop goes on)
     // Heartbeat (contract v1.11, D-066): while claude's stream prints, tell the core the hop is alive — at most one every 30 s, never awaited, never a timer
     // (a hung child prints nothing, so it must not look alive). `lastSent` starts at the spawn: `hop.started` already stamped the first activity.
     const clock = () => (deps.now ?? (() => new Date()))().getTime();
@@ -271,9 +302,10 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
             .finally(() => { beat.inFlight = false; });
         }
         const blocks = state.feed(line);
-        if (blocks.length > 0 && end.note === null) {
-          end.note = NOTES.blocked(worker.name, blocks[0]!.action);
-          log(`hop ${hop.id}: ${blocks[0]!.kind} block: ${blocks[0]!.text.trim().slice(0, 400)}`);
+        for (const b of end.note === null ? blocks : []) {
+          if (isReadGuardBlock(b) && ++readRefusals < READ_GUARD_STOP_AT) { log(`hop ${hop.id}: read-guard refused a read (${readRefusals} of ${READ_GUARD_STOP_AT - 1} allowed): ${b.action}`); continue; }
+          end.note = NOTES.blocked(worker.name, b.action);
+          log(`hop ${hop.id}: ${b.kind} block: ${b.text.trim().slice(0, 400)}`);
           stop();
           return false;
         }
@@ -307,7 +339,8 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     if (deps.stopping?.()) { log(`hop ${hop.id}: runner is stopping — left running for the next runner to interrupt`); return hop; }
     // a hop that ended without a result says which tools it used, so a reader of the hop (not only of the trace) can see where it went
     const tools = toolSummary(lines, messageId !== null ? ["locate", "reply"] : []);
-    const withTools = (note: string) => [note, tools].filter((t) => t !== "").join(" · ").slice(0, 2000);
+    const refused = readRefusals > 0 ? NOTES.readsRefused(readRefusals) : "";
+    const withTools = (note: string) => [note, refused, tools].filter((t) => t !== "").join(" · ").slice(0, 2000);
     const tokens = { ...(sum.tokensIn === null ? {} : { tokensIn: sum.tokensIn }), ...(sum.tokensOut === null ? {} : { tokensOut: sum.tokensOut }) };
     // the limit note is REQ-012's fixed Thai wording and its cause is known; every other stop says where the hop had got to
     if (end.note !== null) return await finish({ outcome: "stopped", note: box.limit ? end.note : withTools(end.note), ...tokens });
@@ -315,6 +348,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const events = (await eventsAfter(api, project.id, startSeq)).filter((e) => e.actor === workerActor);
     // a child that exited non-zero says so in the note — a reader of the hop must not think it ended cleanly (Sector's review)
     const exit = code !== 0 ? `exit ${code}` : "";
+    const okNote = [exit, refused].filter((t) => t !== "").join(" · "); // a hop that ends with a result still says what was refused on the way
     const failed = () => finish({ outcome: "failed", note: withTools(exit === "" ? NOTES.noResult : `${NOTES.noResult} · ${exit}`), ...tokens });
 
     if (messageId !== null) {
@@ -324,10 +358,10 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
       const proposed = events.some((e) => e.type === "proposal.made" && e.data?.messageId === messageId);
       const amended = replied.data?.amendment != null;
       const outcome: HopOutcome = proposed && amended ? "proposed_and_amended" : proposed ? "proposed" : amended ? "amended" : "replied";
-      return await finish({ outcome, note: exit, ...tokens });
+      return await finish({ outcome, note: okNote, ...tokens });
     }
     const last = events.filter((e) => cardOf(e) === card!.id && OUTCOME[e.type] !== undefined).pop();
-    return last ? await finish({ outcome: OUTCOME[last.type]!, note: exit, ...tokens }) : await failed();
+    return last ? await finish({ outcome: OUTCOME[last.type]!, note: okNote, ...tokens }) : await failed();
   } catch (e) {
     const msg = messageOf(e);
     log(`hop ${hop.id}: ${e instanceof Error ? (e.stack ?? msg) : msg}`);

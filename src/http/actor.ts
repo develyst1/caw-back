@@ -15,13 +15,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 // Not a caller's write: Blueprint's push (it has no actor to name) and the check that writes nothing.
 const NO_ACTOR = [/^\/v1\/notify$/, /^\/v1\/projects\/[^/]+\/rebuild-check$/];
-// The only writes a `runner:<name>` may make: open / finish a run, start / finish-or-claim a hop (SPEC § v1.2), and — v1.11 — a hop heartbeat.
+// The only writes a `runner:<name>` may make: open / finish a run, start / finish-or-claim a hop (SPEC § v1.2), a hop heartbeat (v1.11) and its check-in (v1.16).
 const RUNNER_ROUTES: { method: string; path: RegExp }[] = [
   { method: "POST", path: /^\/v1\/projects\/[^/]+\/runs$/ },
   { method: "PATCH", path: /^\/v1\/runs\/[^/]+$/ },
   { method: "POST", path: /^\/v1\/projects\/[^/]+\/hops$/ },
   { method: "PATCH", path: /^\/v1\/hops\/[^/]+$/ },
   { method: "POST", path: /^\/v1\/hops\/[^/]+\/heartbeat$/ },
+  { method: "POST", path: /^\/v1\/runner\/check-in$/ }, // v1.16: process liveness, no event
 ];
 const RUNNER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -43,7 +44,7 @@ export const actorRule = (db: Db): MiddlewareHandler<Env> => async (c, next) => 
     throw new ApiError(400, "actor_required", "send X-CAW-Actor: operator, worker:<workerId> or runner:<name> (name = letters, digits, _ and -, 1–64)");
   }
   if (runner !== null && !RUNNER_ROUTES.some((r) => r.method === c.req.method && r.path.test(c.req.path))) {
-    throw new ApiError(403, "runner_not_allowed", "a runner may only open / finish runs, start / finish / claim hops and send a hop heartbeat");
+    throw new ApiError(403, "runner_not_allowed", "a runner may only open / finish runs, start / finish / claim hops, send a hop heartbeat and check in");
   }
   if (worker !== null) {
     const [known] = await db.select({ id: workers.id }).from(workers).where(eq(workers.id, worker));

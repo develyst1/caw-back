@@ -14,8 +14,8 @@ export const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 const iso = (d: Date) => d.toISOString();
 const projectOf = (r: typeof projects.$inferSelect): ProjectState => ({
   id: r.id, name: r.name, blueprintProjectId: r.blueprintProjectId, version: r.version, latestSeenVersion: r.latestSeenVersion,
-  mode: r.mode as ProjectState["mode"], hopBudget: r.hopBudget, hopsUsed: r.hopsUsed, workspace: r.workspace,
-  entryWorkerId: r.entryWorkerId, createdAt: iso(r.createdAt),
+  mode: r.mode as ProjectState["mode"], hopBudget: r.hopBudget, hopsUsed: r.hopsUsed, workspace: { roots: r.workspace.roots, readOnly: r.workspace.readOnly ?? [] }, // a row from before v1.16 has no readOnly
+  entryWorkerId: r.entryWorkerId, codeMap: r.codeMap ?? null, createdAt: iso(r.createdAt),
 });
 const workerOf = (r: typeof workers.$inferSelect): WorkerState => ({
   id: r.id, name: r.name, roles: r.roles, skills: r.skills, model: r.model, effort: r.effort, avatar: r.avatar ?? null, deletedAt: r.deletedAt && iso(r.deletedAt), combinedFrom: r.combinedFrom, createdAt: iso(r.createdAt),

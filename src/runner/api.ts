@@ -7,7 +7,7 @@ export class RunnerApiError extends Error {
 }
 
 export type Project = {
-  id: string; name: string; mode: "manual" | "dispatcher"; hopBudget: number; hopsUsed: number; workspace: { roots: string[] };
+  id: string; name: string; mode: "manual" | "dispatcher"; hopBudget: number; hopsUsed: number; workspace: { roots: string[]; readOnly?: string[] };
   /** the worker who answers the chat (and takes the first card); null until the operator picks one */
   entryWorkerId: string | null;
 };
@@ -30,6 +30,9 @@ export type Hop = {
    *  test fixtures (main.test.ts, report.test.ts — outside TASK-C-038's file list) need not carry it; the runner never reads it. */
   lastActivityAt?: string;
 };
+/** The project's read-only folders (D-100, SPEC-A-009 § Revision 2): `readOnly` ⊆ `roots`. A core before A-094 sends none — read as [] HERE, and nowhere else. */
+export const readOnlyOf = (w: Project["workspace"]): string[] => w.readOnly ?? [];
+
 export type ChatQuestion = { text: string; proposedDefault?: string; cases?: string[] };
 /** `replyTo` / `questions` make a thread (a worker's reply asks `questions[]`; the operator's next message answers them); `retryRequestedAt` is contract v1.9's retry trigger */
 export type ChatMessage = {
@@ -42,7 +45,7 @@ export type Finish = { outcome: HopOutcome; tokensIn?: number; tokensOut?: numbe
 /** @param actor who every WRITE is made as: `runner:<instance id>` (contract v1.2, SPEC-A-008) — the one place it is decided. The API accepts it
  *  only on runs and hops, which is all the runner writes. Reads send none. */
 export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url, init) => fetch(url, init)) {
-  async function call<T>(method: string, path: string, who: string | null, body?: unknown): Promise<T> {
+  async function call<T>(method: string, path: string, who: string | null, body?: unknown, emptyOk = false): Promise<T> {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["content-type"] = "application/json";
     if (who !== null) headers["x-caw-actor"] = who;
@@ -56,7 +59,7 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
       try { json = JSON.parse(text); } catch { throw new RunnerApiError(res.status, "bad_body", `${method} ${path}: not JSON: ${text.slice(0, 120)}`); }
     }
     if (!res.ok) throw new RunnerApiError(res.status, json?.error?.code ?? "unknown", json?.error?.message ?? `${method} ${path} failed`);
-    if (json === null) throw new RunnerApiError(res.status, "bad_body", `${method} ${path}: empty body`);
+    if (json === null && !emptyOk) throw new RunnerApiError(res.status, "bad_body", `${method} ${path}: empty body`);
     return json as T;
   }
   const enc = encodeURIComponent;
@@ -87,6 +90,8 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
     claimHop: (hopId: string, claim: string) => call<Hop>("PATCH", `/v1/hops/${enc(hopId)}`, actor, { claim }),
     /** contract v1.11: "this hop's stream is alive". No body — the core stamps the time and throttles to one write per 60 s (still 200). 409 `hop_not_running` once it ended. */
     heartbeat: (hopId: string) => call<{ lastActivityAt: string }>("POST", `/v1/hops/${enc(hopId)}/heartbeat`, actor),
+    /** contract v1.16 rev. 1: "this runner is alive" (`running`) or "I am stopping" (`stopping`), runner actor only → 204 with NO body — the only call that may have an empty one */
+    checkIn: async (state: "running" | "stopping"): Promise<void> => { await call<unknown>("POST", "/v1/runner/check-in", actor, { state }, true); },
     finishHop: (hopId: string, finish: Finish) => call<Hop>("PATCH", `/v1/hops/${enc(hopId)}`, actor, finish),
   };
 }

@@ -2,11 +2,13 @@
 import { asc, desc, eq, sql } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
 import { rebuildCheck } from "../core/rebuild";
-import type { ProjectState } from "../core/reduce";
+import type { CodeMapState, ProjectState } from "../core/reduce";
 import { loadState } from "../core/state";
 import { writeDecided, writeEvent } from "../core/write";
-import type { Actor, Mode } from "../core/events";
+import { chatHopOf } from "../chat/guard";
+import type { Actor, CodeMapInput, Mode } from "../core/events";
 import { now } from "../core/ids";
+import { rewriteForActor } from "../core/paths";
 import type { Db } from "../db/client";
 import { cards, events, projects } from "../db/schema";
 import { requireOperator } from "../http/actor";
@@ -46,13 +48,52 @@ export async function setMode(db: Db, actor: Actor, projectId: string, input: { 
   return state.project!;
 }
 
-export async function setWorkspace(db: Db, actor: Actor, projectId: string, roots: string[]): Promise<Project> {
+// roots replace the list as a whole; readOnly (v1.16, D-100) ⊆ roots is checked at the route, default [] = "all writable"
+export async function setWorkspace(db: Db, actor: Actor, projectId: string, input: { roots: string[]; readOnly?: string[] }): Promise<Project> {
   requireOperator(actor);
   const { state } = await writeDecided(db, projectId, (s) => {
     projectIn(s);
-    return { type: "project.workspace_set", projectId, actor, at: now(), data: { roots } };
+    return { type: "project.workspace_set", projectId, actor, at: now(), data: { roots: input.roots, readOnly: input.readOnly ?? [] } };
   });
   return state.project!;
+}
+
+// The setup step's result (v1.16, REQ-015 R2a, D-097): the ENTRY worker saves it from its running CHAT hop (v1.5's rules: 400 hop_required, 403
+// not_your_message), then 403 not_entry_worker if the hop's worker is no longer the entry. Machine paths in every string are rewritten before it is stored
+// (the event holds the clean text). Saving again replaces the map and clears confirmedAt. Written by a worker only — the operator has no hop.
+export async function saveCodeMap(db: Db, actor: Actor, hopId: string | null, projectId: string, input: CodeMapInput): Promise<CodeMapState> {
+  const { state } = await writeDecided(db, projectId, (s) => {
+    const project = projectIn(s);
+    const hop = chatHopOf(s, actor, hopId);
+    if (project.entryWorkerId !== hop.workerId) throw new ApiError(403, "not_entry_worker", "only the project's entry worker saves the code map");
+    const w = (t: string) => rewriteForActor(actor, t, project.workspace.roots);
+    const map: CodeMapInput = {
+      folders: input.folders.map((f) => ({ name: w(f.name), kind: f.kind, ...(f.note !== undefined ? { note: w(f.note) } : {}) })),
+      stack: input.stack.map(w), commands: { run: input.commands.run.map(w), test: input.commands.test.map(w) }, rules: input.rules.map(w),
+      questions: input.questions.map((q) => ({ text: w(q.text), proposedDefault: w(q.proposedDefault) })), ...(input.notes !== undefined ? { notes: w(input.notes) } : {}),
+    };
+    return { type: "project.code_map_saved", projectId, actor, at: now(), data: { ...map, hopId: hop.id } };
+  });
+  return state.project!.codeMap!;
+}
+
+class AlreadyConfirmed extends Error { constructor(readonly codeMap: CodeMapState) { super("already confirmed"); } } // rolls the (empty) write back
+
+/** The operator has seen the code map and says it is right. None → 409 no_code_map; already confirmed → the map as it is, no event. */
+export async function confirmCodeMap(db: Db, actor: Actor, projectId: string): Promise<CodeMapState> {
+  requireOperator(actor);
+  try {
+    const { state } = await writeDecided(db, projectId, (s) => {
+      const project = projectIn(s);
+      if (project.codeMap === null) throw new ApiError(409, "no_code_map", "this project has no code map yet");
+      if (project.codeMap.confirmedAt !== null) throw new AlreadyConfirmed(project.codeMap);
+      return { type: "project.code_map_confirmed", projectId, actor, at: now(), data: {} };
+    });
+    return state.project!.codeMap!;
+  } catch (e) {
+    if (e instanceof AlreadyConfirmed) return e.codeMap;
+    throw e;
+  }
 }
 
 // v1.7: a read-only proxy to Blueprint's part context — one seam call, as returned, nothing stored (REQ-010 R1). `version` defaults

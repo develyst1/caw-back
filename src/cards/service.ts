@@ -4,7 +4,8 @@ import { eq } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
 import type { Actor, CardStatus } from "../core/events";
 import { newId, now } from "../core/ids";
-import type { CardState, State } from "../core/reduce";
+import { rewriteForActor } from "../core/paths";
+import type { CardState, CodeMapState, State } from "../core/reduce";
 import { isUuid, loadState } from "../core/state";
 import { writeDecided } from "../core/write";
 import type { Db } from "../db/client";
@@ -86,7 +87,7 @@ export async function getCard(db: Db, cardId: string): Promise<Card> {
   return cardView(state, card);
 }
 
-export type CardContext = { card: Card; spec: unknown; notes: Note[]; decisions: { cardId: string; number: number; question: string; answer: string }[] };
+export type CardContext = { card: Card; spec: unknown; notes: Note[]; decisions: { cardId: string; number: number; question: string; answer: string }[]; codeMap: CodeMapState | null };
 
 // spec = Blueprint's PartContext exactly as returned (no reshaping). notes oldest first. decisions = the answered question
 // cards this card depends on directly (SPEC A-1, Interpreted).
@@ -99,6 +100,7 @@ export async function cardContext(db: Db, blueprint: Blueprint, cardId: string):
     notes: state.notes.filter((n) => n.cardId === cardId).sort((a, b) => (a.id < b.id ? -1 : 1)).map(noteView),
     decisions: depsOf(state, cardId).filter((d) => d.kind === "question" && d.answer !== null)
       .map((d) => ({ cardId: d.id, number: d.number, question: d.question!.text, answer: d.answer! })),
+    codeMap: state.project!.codeMap, // v1.16: every card hop knows the folders
   };
 }
 
@@ -116,7 +118,7 @@ export async function addComment(db: Db, actor: Actor, hopId: string | null, car
   const { state } = await onCard(db, cardId, (s, card) => {
     guardHop(s, actor, hopId, card);
     mayAct(actor, card);
-    return { type: "card.commented", projectId: card.projectId, actor, at: now(), data: { cardId, noteId, text } };
+    return { type: "card.commented", projectId: card.projectId, actor, at: now(), data: { cardId, noteId, text: rewriteForActor(actor, text, s.project!.workspace.roots) } }; // v1.16: a worker's machine paths out
   });
   return noteView(state.notes.find((n) => n.id === noteId)!);
 }
@@ -195,7 +197,9 @@ export async function askQuestion(db: Db, actor: Actor, hopId: string | null, ca
     mayAct(actor, c);
     if (c.kind === "question") throw new ApiError(400, "validation", "a question card cannot ask a question");
     return { type: "card.question_opened", projectId: c.projectId, actor, at: now(), data: {
-      askingCardId: cardId, id, number: Math.max(0, ...s.cards.map((x) => x.number)) + 1, text: q.text, proposedDefault: q.proposedDefault, cases: q.cases,
+      askingCardId: cardId, id, number: Math.max(0, ...s.cards.map((x) => x.number)) + 1,
+      text: rewriteForActor(actor, q.text, s.project!.workspace.roots), proposedDefault: rewriteForActor(actor, q.proposedDefault, s.project!.workspace.roots),
+      cases: q.cases.map((x) => rewriteForActor(actor, x, s.project!.workspace.roots)), // v1.16: the question is read by the operator
     } };
   });
   return cardView(state, cardIn(state, id));

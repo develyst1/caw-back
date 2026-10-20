@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { chainView } from "../chain/service";
 import type { Actor, ChatQuestion, HopOutcome } from "../core/events";
 import { newId, now } from "../core/ids";
+import { rewriteForActor } from "../core/paths";
 import type { ChatMessageState, HopState, State } from "../core/reduce";
 import { isUuid, loadState } from "../core/state";
 import { writeDecided } from "../core/write";
@@ -70,8 +71,11 @@ export async function reply(db: Db, actor: Actor, hopId: string | null, messageI
     if (asked.author !== "operator") throw new ApiError(400, "validation", "only an operator message is answered");
     if (asked.replyHopId !== null) throw new ApiError(409, "already_answered", "that message has already been answered");
     if (input.proposalId !== undefined && !s.proposals.some((p) => p.id === input.proposalId)) throw new ApiError(400, "validation", `proposalId: ${input.proposalId} is not a proposal of this project`);
+    // v1.16: machine paths out of a worker's text — the reply and its questions (the operator reads both); stored clean
+    const w = (t: string) => rewriteForActor(actor, t, project.workspace.roots);
+    const questions = input.questions?.map((q) => ({ text: w(q.text), proposedDefault: w(q.proposedDefault), cases: q.cases.map(w) })) ?? null;
     return { type: "chat.replied", projectId, actor, at: now(), data: {
-      id, messageId, hopId: hop.id, text: input.text, questions: input.questions ?? null, proposalId: input.proposalId ?? null,
+      id, messageId, hopId: hop.id, text: w(input.text), questions, proposalId: input.proposalId ?? null,
       amendment: input.amendment ? { blueprintMessageId: input.amendment.blueprintMessageId, link: `${webUrl}/p/${encodeURIComponent(project.blueprintProjectId)}/chat` } : null,
     } };
   });

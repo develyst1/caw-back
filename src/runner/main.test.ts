@@ -8,7 +8,7 @@ import { RunnerApiError, createApi } from "./api";
 import { type HopFile, type Procs, readHopFile, writeHopFile } from "./procs";
 import { HOOKS } from "./config";
 import type { HopDeps } from "./hop";
-import { createRunner } from "./main";
+import { createCheckIn, createRunner } from "./main";
 import { type FakeChild, fakeChild, fixture, hopAware, limitFixture } from "./testkit";
 import { formatReset } from "./thai";
 
@@ -21,6 +21,10 @@ writeFileSync(join(WS, ".claude/skills/role-be/SKILL.md"), "BE craft");
 
 /** no process exists, no group is alive — what the runner sees when nothing was left behind */
 const noProcs: Procs = { inspect: () => null, groupAlive: () => false, killGroup: () => {}, sleep: async () => {} };
+
+/** the runner's base settings file, which every hop extends with its own read fence (TASK-C-042) */
+const baseSettings = join(tmp("caw-main-base-"), "settings.json");
+writeFileSync(baseSettings, JSON.stringify({ permissions: { allow: [], deny: [] }, sandbox: { enabled: true }, hooks: { PreToolUse: [] } }));
 
 async function world() {
   const t0 = await setup();
@@ -37,7 +41,7 @@ async function world() {
   let make: (cmd: string[]) => FakeChild = () => fakeChild({ lines: fixture("ok"), before: async () => { await t.call("POST", `/v1/cards/${card.id}/comments`, { text: "done" }, actor); } });
   const log: string[] = [];
   const mkDeps = (): HopDeps => ({
-    api, tmpRoot: tmp("caw-main-tmp-"), hopsDir: hopsDir, procs: noProcs, log: (l) => log.push(l), cursors: new Map(), settingsFile: "/tmp/settings.json",
+    api, tmpRoot: tmp("caw-main-tmp-"), hopsDir: hopsDir, procs: noProcs, log: (l) => log.push(l), cursors: new Map(), settingsFile: baseSettings,
     config: { apiUrl: "http://127.0.0.1:4530", pollMs: 10, hopMaxMs: 5000, claudeBin: "/bin/claude", workspaceRoot: WS, hooks: HOOKS.map((h) => `${WS}/scripts/hooks/${h}`) },
     spawn: (cmd) => { spawned.push(cmd); const c = make(cmd); children.push(c); return c; },
   });
@@ -837,5 +841,111 @@ describe("chat hops — what the agent review found (TASK-C-034)", () => {
     await c.call("PUT", `/v1/projects/${c.project.id}/chain/entry`, { workerId: other.id });            // the operator picks another entry worker
     await r.tick(); await r.idle();
     expect((await c.api.hops(c.project.id)).filter((h) => h.messageId === m.id).map((h) => [h.workerId === other.id, h.outcome])).toEqual([[true, "stopped"]]); // it WAS tried with the new entry worker (stopped there: that worker has a skill the workspace does not have)
+  });
+});
+
+describe("the runner's check-in (TASK-C-040, contract v1.16 rev. 1, REQ-015 R1)", () => {
+  /** a fake scheduler: the test fires the timer by hand, so no real second passes */
+  function fakeClock() {
+    const timers: { fn: () => void; ms: number; live: boolean }[] = [];
+    const every = (fn: () => void, ms: number) => { const t = { fn, ms, live: true }; timers.push(t); return () => { t.live = false; }; };
+    return { every, timers, fire: () => { for (const t of timers) if (t.live) t.fn(); } };
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 5));
+  const mk = (checkIn: (state: "running" | "stopping") => Promise<void>, clock = fakeClock()) => {
+    const log: string[] = [];
+    return { clock, log, ci: createCheckIn({ api: { checkIn }, log: (l) => log.push(l), every: clock.every }) };
+  };
+
+  test("`running` once at the start, then on the 15 s timer: at 15 s and 30 s that is 3 calls — while a long hop is still running", async () => {
+    const calls: string[] = [];
+    const m = mk(async (s) => { calls.push(s); });
+    await m.ci.start();
+    expect(calls).toEqual(["running"]);
+    expect(m.clock.timers).toHaveLength(1);
+    expect(m.clock.timers[0]!.ms).toBe(15_000);
+    // a hop that never ends while the timer fires: the check-in does not wait for it (its own timer, not the poll loop)
+    let hopDone!: () => void;
+    const longHop = new Promise<void>((r) => { hopDone = r; });
+    m.clock.fire(); await settle();
+    m.clock.fire(); await settle();
+    expect(calls).toEqual(["running", "running", "running"]);
+    hopDone(); await longHop;
+  });
+  test("the interval is injectable", async () => {
+    const clock = fakeClock();
+    const ci = createCheckIn({ api: { checkIn: async () => {} }, log: () => {}, every: clock.every, intervalMs: 50 });
+    await ci.start();
+    expect(clock.timers[0]!.ms).toBe(50);
+    await ci.stop();
+  });
+  test("three failures then it works: the runner is not stopped; one `failed` line (first of the streak) and one `back` line", async () => {
+    let n = 0;
+    const m = mk(async () => { n++; if (n <= 3) throw new RunnerApiError(0, "network", "down"); });
+    await m.ci.start();                              // fail 1 (the start one)
+    m.clock.fire(); await settle();                  // fail 2
+    m.clock.fire(); await settle();                  // fail 3
+    m.clock.fire(); await settle();                  // works
+    m.clock.fire(); await settle();                  // works again: no second `back`
+    expect(m.log.filter((l) => l.includes("check-in failed"))).toHaveLength(1);
+    expect(m.log.filter((l) => l.includes("check-in is back"))).toHaveLength(1);
+    expect(m.log.some((l) => l.includes("network"))).toBe(true);
+  });
+  test("a start whose check-in fails does not throw — the runner goes on", async () => {
+    const m = mk(async () => { throw new Error("boom"); });
+    await expect(m.ci.start()).resolves.toBeUndefined();
+  });
+  test("stop(): the timer is cleared and exactly ONE `stopping` goes out, then no more (a second stop() or a late timer sends nothing)", async () => {
+    const calls: string[] = [];
+    const m = mk(async (s) => { calls.push(s); });
+    await m.ci.start();
+    await m.ci.stop();
+    await m.ci.stop();
+    m.clock.fire(); await settle();
+    expect(calls).toEqual(["running", "stopping"]);
+    expect(m.clock.timers[0]!.live).toBe(false);
+  });
+  test("stop() does not wait longer than its timeout for a check-in that hangs, and a failure there is only logged", async () => {
+    const clock = fakeClock();
+    const log: string[] = [];
+    const ci = createCheckIn({ api: { checkIn: (s) => (s === "stopping" ? new Promise<void>(() => {}) : Promise.resolve()) }, log: (l) => log.push(l), every: clock.every, stopTimeoutMs: 30 });
+    await ci.start();
+    const t0 = Date.now();
+    await ci.stop();
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(log.some((l) => l.includes("stopping"))).toBe(true);
+  });
+  test("api.checkIn: 204 with no body is fine; the same empty body on another call is still `bad_body`", async () => {
+    const seen: { url: string; body: string; actor: string | null }[] = [];
+    const fetchFn = async (url: string, init?: RequestInit) => {
+      seen.push({ url, body: String(init?.body ?? ""), actor: new Headers(init?.headers).get("x-caw-actor") });
+      return url.endsWith("/v1/runner/check-in") ? new Response(null, { status: 204 }) : new Response("", { status: 200 });
+    };
+    const api = createApi("http://x", "runner:t", fetchFn as typeof fetch);
+    await expect(api.checkIn("running")).resolves.toBeUndefined();
+    expect(seen[0]).toEqual({ url: "http://x/v1/runner/check-in", body: JSON.stringify({ state: "running" }), actor: "runner:t" });
+    await expect(api.projects()).rejects.toMatchObject({ code: "bad_body" });
+  });
+  test("api.checkIn: a refusal (403 runner_only) still throws a RunnerApiError", async () => {
+    const api = createApi("http://x", "runner:t", (async () => new Response(JSON.stringify({ error: { code: "runner_only", message: "no" } }), { status: 403 })) as unknown as typeof fetch);
+    await expect(api.checkIn("running")).rejects.toMatchObject({ status: 403, code: "runner_only" });
+  });
+  test("through the REAL in-process API (A-093): after the first check-in GET /v1/team-status is running: true; after the `stopping` one it is false at once", async () => {
+    const w = await world();
+    expect((await w.call("GET", "/v1/team-status")).json.running).toBe(false);          // nobody has checked in
+    const ci = createCheckIn({ api: w.api, log: (l) => w.log.push(l), every: () => () => {} });
+    await ci.start();
+    const up = (await w.call("GET", "/v1/team-status")).json;
+    expect([up.running, up.runnerName]).toEqual([true, "test"]);                          // the actor is `runner:test`
+    expect(up.lastSeenAt).not.toBeNull();
+    await ci.stop();
+    const down = (await w.call("GET", "/v1/team-status")).json;
+    expect(down.running).toBe(false);                                                    // at once, not 45 s later
+    expect(down.lastSeenAt).not.toBeNull();                                              // the last sighting is kept
+  });
+  test("through the REAL API: only a runner may check in — the operator gets 403 runner_only", async () => {
+    const w = await world();
+    const r = await w.call("POST", "/v1/runner/check-in", { state: "running" }, "operator");
+    expect([r.status, r.json.error.code]).toEqual([403, "runner_only"]);
   });
 });

@@ -64,9 +64,25 @@ export function threadOf(messages: readonly ChatMessage[], messageId: string): T
   return { original: cur?.text ?? null, questions: prev.questions.map((q) => q.text) };
 }
 
+/** The folders by the names the screen and the replies use (D-098): the last path segment; when two roots share one, `parent/last` — and further up
+ *  while they still collide. A name that collides with nothing stays short. Never an absolute path. */
+export function folderNames(roots: readonly string[]): string[] {
+  const parts = roots.map((r) => r.split("/").filter((x) => x !== ""));
+  const depth = parts.map(() => 1);
+  const name = (i: number) => parts[i]!.slice(-depth[i]!).join("/");
+  for (let guard = 0; guard < 64; guard++) {
+    const seen = new Map<string, number[]>();
+    parts.forEach((_, i) => seen.set(name(i), [...(seen.get(name(i)) ?? []), i]));
+    const clashing = [...seen.values()].filter((g) => g.length > 1).flat().filter((i) => depth[i]! < parts[i]!.length);
+    if (clashing.length === 0) break;
+    for (const i of clashing) depth[i]!++;
+  }
+  return parts.map((_, i) => name(i));
+}
+
 /** The entry worker's CHAT hop (SPEC-C-004 § 1 step 3; REQ-013). The words in braces are REQ-013's, said exactly. `locate` needs the project id. */
-export function buildChatPrompt(input: { worker: PromptWorker; messageId: string; projectId: string; thread?: Thread | null }): string {
-  const { worker, messageId, projectId, thread } = input;
+export function buildChatPrompt(input: { worker: PromptWorker; messageId: string; projectId: string; thread?: Thread | null; folders?: string[] }): string {
+  const { worker, messageId, projectId, thread, folders } = input;
   return [
     `คุณคือ ${worker.name} (${worker.roles.join(" + ")}) ผู้รับแชตของโปรเจกต์ใน CAW — your role skills are in your system prompt: follow them.`,
     `The operator wrote message ${messageId} in project ${projectId}.`,
@@ -79,6 +95,14 @@ export function buildChatPrompt(input: { worker: PromptWorker; messageId: string
       "Use the original request (not this message) for `locate`; apply these answers to the proposal; then propose / amend / reply as usual.",
       "",
     ] : []),
+    ...(folders && folders.length > 0 ? [`Folders: ${folders.join(", ")}`, ""] : []),
+    "0. If the message asks you to understand the project — which folders hold what, the stack, how to run and test, the house rules — it is SETUP, not a feature. For SETUP:",
+    "   - do not call `locate`, `send_amendment` or `propose_cards`;",
+    "   - read the folders listed above (Read / Glob / Grep only, at most about 40 reads);",
+    "   - call `save_code_map` once with the structured map: `folders` (every folder, each `{ name, kind: fe | be | other, note }` — the note says why, in Thai, one line), `stack`, `commands.run` and `commands.test` (lists), `rules` (file names, or an empty list), `questions` (each `{ text, proposedDefault }`), and `notes` only if needed; every string at most 500 characters;",
+    "   - then `reply` in a few lines: what you mapped, and ask the operator to confirm the map.",
+    "   Anything that is not SETUP is a feature request: do not read any file — go to step 1 (`chat_context`, then `locate`) and follow steps 1–6.",
+    "",
     "1. Read it with the MCP tool `chat_context` (messageId above).",
     `2. Call \`locate\` { projectId: "${projectId}", request } before anything else: it tells you which parts of the confirmed spec the request touches.`,
     "3. If `locate` returned parts (candidates) for the request, propose cards for them with `propose_cards` — only for parts `locate` returned, every item anchored on a located key, each with your estimate of `hops`. Nothing is made until the operator accepts. Missing details are not a reason to hold the proposal back: put the questions in your reply (step 5).",
@@ -86,9 +110,10 @@ export function buildChatPrompt(input: { worker: PromptWorker; messageId: string
     "5. If you need decisions first, put ALL your questions in the one reply as `questions[]`, each with `text`, `proposedDefault` and `cases` — never one question at a time.",
     "6. Always end with exactly one `reply` in Thai. `reply` is mandatory — if you cannot do anything else, reply and say what blocks you.",
     "   - Write line breaks as real new lines in `text` — never the two characters \\n.",
+    "   - In every reply: never write a path that starts with `/` or `~`; use `<folder>/<path inside>`. Never print an id (no uuid, no message id). Never tell the operator to go to Blueprint in your text — with an amendment, pass `amendment.blueprintMessageId` and the screen shows the link.",
     "   - With a proposal the text contains: `{n} งาน ใช้ประมาณ {h} ก้าว` (n = the number of cards, h = the sum of the hops) and you pass `proposalId`.",
     "   - With an amendment the text contains: `เรื่องนี้ยังไม่มีใน spec — ส่งไปเพิ่มใน Blueprint แล้ว` and the link, and you pass `amendment.blueprintMessageId`.",
     "",
-    "No git writes, no web, no files: this is a conversation, not coding.",
+    "No git writes, no web, no file writes: this is a conversation, not coding.",
   ].join("\n");
 }

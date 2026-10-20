@@ -11,14 +11,16 @@ import { followRoutes } from "./http/routes/follow";
 import { hopRoutes } from "./http/routes/hops";
 import { proposalRoutes } from "./http/routes/proposals";
 import { seamRoutes } from "./http/routes/seam";
+import { createTeamStatus, teamRoutes, type TeamStatusHolder } from "./http/routes/team";
 import { projectRoutes } from "./http/routes/projects";
 import { workerRoutes } from "./http/routes/workers";
 
 const DOCUMENT = { openapi: "3.1.0", info: { title: "CAW API", version: "1.0.0" } };
 
-export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follower } = {}): OpenAPIHono<Env> {
+export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follower; team?: TeamStatusHolder } = {}): OpenAPIHono<Env> {
   const blueprint = deps.blueprint ?? createBlueprint(); // no call happens until a route needs one
   const follow = deps.follow ?? createFollower(db, blueprint); // started by index.ts, not here
+  const team = deps.team ?? createTeamStatus(); // in memory, one per app (SPEC-A-009 § R1b)
   const app = new OpenAPIHono<Env>({ defaultHook: validationHook });
   app.get("/health", (c) => c.json({ ok: true }));
   app.use("/v1/*", actorRule(db));
@@ -31,6 +33,7 @@ export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follow
   proposalRoutes(app, db, blueprint);
   seamRoutes(app, db, blueprint);
   followRoutes(app, follow);
+  teamRoutes(app, team);
 
   // The document is generated from the route schemas above, and lists itself.
   app.openapi(createRoute({

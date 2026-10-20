@@ -45,7 +45,7 @@ test("lists the tools with their input schemas — the six card tools (the chat 
   const w = await world();
   const { client } = await connect(w.app, w.a.id);
   const tools = (await client.listTools()).tools;
-  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "chat_context", "comment", "hand_off", "locate", "my_cards", "propose_cards", "reply", "send_amendment", "set_status"]); // 11 since v1.4
+  expect(tools.map((t) => t.name).sort()).toEqual(["ask_operator", "card_context", "chat_context", "comment", "hand_off", "locate", "my_cards", "propose_cards", "reply", "save_code_map", "send_amendment", "set_status"]); // 11 since v1.4, 12 with save_code_map (v1.16)
   const req = (name: string) => (tools.find((t) => t.name === name)!.inputSchema as { required?: string[] }).required ?? [];
   expect(req("my_cards")).toEqual([]);
   expect(req("card_context")).toEqual(["cardId"]);
@@ -188,7 +188,7 @@ test("over real stdio: `bun run src/mcp/server.ts` with CAW_API_URL + CAW_WORKER
   const client = new Client({ name: "stdio-test", version: "1" });
   await client.connect(transport);
   closers.push(() => client.close());
-  expect((await client.listTools()).tools).toHaveLength(11);
+  expect((await client.listTools()).tools).toHaveLength(12); // 11 until save_code_map (v1.16)
   const r = await client.callTool({ name: "my_cards", arguments: {} });
   const cards = JSON.parse((r.content as { text: string }[])[0]!.text).cards;
   expect(cards.map((c: any) => c.title)).toEqual(["งานของ Ann"]);

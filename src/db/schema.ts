@@ -2,6 +2,7 @@
 // projections of `events`: one reducer (src/core/reduce.ts) writes them, so a rebuild from the events equals them.
 // No column holds Blueprint spec text — a card's anchor is { key, version }; `title` / `todo` / `note` are CAW's own words.
 import { sql } from "drizzle-orm";
+import type { CodeMapState } from "../core/reduce"; // a type only: the column holds what the reducer makes
 import { bigserial, check, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const caw = pgSchema("caw");
@@ -37,7 +38,8 @@ export const projects = caw.table("projects", {
   mode: text("mode").notNull().default("manual"),
   hopBudget: integer("hop_budget").notNull().default(0),
   hopsUsed: integer("hops_used").notNull().default(0),
-  workspace: jsonb("workspace").$type<{ roots: string[] }>().notNull().default({ roots: [] }),
+  workspace: jsonb("workspace").$type<{ roots: string[]; readOnly?: string[] }>().notNull().default({ roots: [] }), // readOnly (v1.16) is optional here: a row from before it has none
+  codeMap: jsonb("code_map").$type<CodeMapState>(), // v1.16: null until the entry worker saves one (migration 0009)
   entryWorkerId: uuid("entry_worker_id").references(() => workers.id),
   createdAt: at("created_at").notNull(),
 }, (t) => [

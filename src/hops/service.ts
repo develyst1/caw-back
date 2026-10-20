@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { isWorkable } from "../cards/view";
 import type { Actor, HopOutcome, StopReason } from "../core/events";
 import { newId, now } from "../core/ids";
+import { rewritePaths } from "../core/paths";
 import type { HopState, RunState, State } from "../core/reduce";
 import { isUuid, loadState } from "../core/state";
 import { writeDecided } from "../core/write";
@@ -59,6 +60,9 @@ export async function startHop(db: Db, actor: Actor, projectId: string,
 
 export type HopPatch = { claim: string } | { outcome: HopOutcome; tokensIn?: number; tokensOut?: number; note?: string };
 
+/** D-103 DEF-2: the runner (and a worker) write notes and reports that quote file paths; the core takes machine paths out in this one place. The operator's own text never. */
+const cleanText = (actor: Actor, text: string, s: State): string => (actor === "operator" ? text : rewritePaths(text, s.project?.workspace.roots ?? []));
+
 export async function patchHop(db: Db, actor: Actor, hopId: string, patch: HopPatch): Promise<Hop> {
   const projectId = await projectIdOf(db, hopsTable, hopId, "hop");
   const hopIn = (s: State) => s.hops.find((h) => h.id === hopId) ?? (() => { throw notFound("hop"); })();
@@ -74,7 +78,7 @@ export async function patchHop(db: Db, actor: Actor, hopId: string, patch: HopPa
       if (hop.claimedBy !== null) throw new ApiError(409, "already_claimed", "that hop is claimed by another runner");
       return { type: "hop.claimed", projectId, actor, at: now(), data: { hopId, claim: patch.claim } };
     }
-    return { type: "hop.finished", projectId, actor, at: now(), data: { hopId, outcome: patch.outcome, tokensIn: patch.tokensIn ?? null, tokensOut: patch.tokensOut ?? null, note: patch.note ?? "" } };
+    return { type: "hop.finished", projectId, actor, at: now(), data: { hopId, outcome: patch.outcome, tokensIn: patch.tokensIn ?? null, tokensOut: patch.tokensOut ?? null, note: cleanText(actor, patch.note ?? "", s) } };
   });
   return hopIn(state);
 }
@@ -125,7 +129,7 @@ export async function finishRun(db: Db, actor: Actor, runId: string, input: { st
   const { state } = await writeDecided(db, projectId, (s) => {
     const run = s.runs.find((r) => r.id === runId) ?? (() => { throw notFound("run"); })();
     if (run.endedAt !== null) throw new ApiError(409, "already_finished", "that run has already finished");
-    return { type: "run.finished", projectId, actor, at: now(), data: { runId, stopReason: input.stopReason, report: input.report } };
+    return { type: "run.finished", projectId, actor, at: now(), data: { runId, stopReason: input.stopReason, report: cleanText(actor, input.report, s) } };
   });
   return runView(state, state.runs.find((r) => r.id === runId)!);
 }

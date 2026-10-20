@@ -1,17 +1,30 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Blueprint } from "../../blueprint/client";
 import type { Db } from "../../db/client";
-import { checkRebuild, createProject, getProject, listEvents, listProjects, readPart, setMode, setWorkspace } from "../../projects/service";
+import { checkRebuild, confirmCodeMap, createProject, getProject, listEvents, listProjects, readPart, saveCodeMap, setMode, setWorkspace } from "../../projects/service";
 import { type Env, requireOperator } from "../actor";
 import { errors } from "../errors";
 
 const json = <T extends z.ZodType>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
 const Id = z.object({ id: z.string() }); // not .uuid(): an id that is no project is 404, as Blueprint does
 
+// v1.16 (REQ-015 R2a): the setup step's result. Every string 1–500, notes ≤ 2 000, each list ≤ 50, folders ≥ 1; rules (and the other lists) may be empty.
+const Str = z.string().min(1).max(500);
+export const CodeMapInputSchema = z.object({
+  folders: z.array(z.object({ name: Str, kind: z.enum(["fe", "be", "other"]), note: Str.optional() })).min(1).max(50),
+  stack: z.array(Str).max(50), commands: z.object({ run: z.array(Str).max(50), test: z.array(Str).max(50) }),
+  rules: z.array(Str).max(50).openapi({ description: "may be empty — the screen shows ไม่มี" }),
+  questions: z.array(z.object({ text: Str, proposedDefault: Str })).max(50), notes: z.string().min(1).max(2000).optional(),
+}).openapi("CodeMapInput");
+export const CodeMapSchema = CodeMapInputSchema.extend({
+  updatedAt: z.string(), updatedBy: z.string().openapi({ description: "the worker who saved it" }), confirmedAt: z.string().nullable().openapi({ description: "set by the operator's confirm; cleared by every new save" }),
+}).openapi("CodeMap");
+
 export const ProjectSchema = z.object({
   id: z.string(), name: z.string(), blueprintProjectId: z.string(), version: z.number().int(), latestSeenVersion: z.number().int(),
   mode: z.enum(["manual", "dispatcher"]), hopBudget: z.number().int(), hopsUsed: z.number().int(),
-  entryWorkerId: z.string().nullable(), workspace: z.object({ roots: z.array(z.string()) }), createdAt: z.string(),
+  entryWorkerId: z.string().nullable(), workspace: z.object({ roots: z.array(z.string()), readOnly: z.array(z.string()).openapi({ description: "⊆ roots; workers read every root and write only the others (D-100)" }) }),
+  codeMap: z.union([CodeMapSchema, z.null()]).openapi({ description: "null until the entry worker saves one (v1.16)" }), createdAt: z.string(),
 }).openapi("Project");
 const ProjectSummarySchema = ProjectSchema.extend({
   cardsDone: z.number().int(), cardsTotal: z.number().int(), stuckCount: z.number().int(),
@@ -52,9 +65,22 @@ export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprin
     .refine((p) => !p.split(/[\\/]/).includes(".."), "a workspace root has no `..` segment");
   app.openapi(createRoute({
     method: "patch", path: "/v1/projects/{id}/workspace",
-    request: { params: Id, body: { ...json(z.object({ roots: z.array(Root).max(20) }), "the folders a worker may work in (replaces the list)"), required: true } },
+    request: { params: Id, body: { ...json(z.object({ roots: z.array(Root).max(20), readOnly: z.array(z.string()).max(20).optional() })
+      .refine((b) => (b.readOnly ?? []).every((r) => b.roots.includes(r)), "readOnly: every entry must be one of roots")
+      .refine((b) => new Set(b.readOnly ?? []).size === (b.readOnly ?? []).length, "readOnly: no repeats"), "the folders a worker may work in (replaces the list); readOnly ⊆ roots, default [] = all writable"), required: true } },
     responses: { 200: json(ProjectSchema, "the project"), 400: errors[400], 403: errors[403], 404: errors[404] },
-  }), async (c) => c.json(await setWorkspace(db, c.get("actor"), c.req.valid("param").id, c.req.valid("json").roots), 200));
+  }), async (c) => c.json(await setWorkspace(db, c.get("actor"), c.req.valid("param").id, c.req.valid("json")), 200));
+
+  app.openapi(createRoute({
+    method: "put", path: "/v1/projects/{id}/code-map",
+    request: { params: Id, body: { ...json(CodeMapInputSchema, "the setup step's result — written by the entry worker from its running chat hop"), required: true } },
+    responses: { 200: json(CodeMapSchema, "the code map (confirmedAt null)"), 400: errors[400], 403: errors[403], 404: errors[404] },
+  }), async (c) => c.json(await saveCodeMap(db, c.get("actor"), c.get("hop"), c.req.valid("param").id, c.req.valid("json")), 200));
+
+  app.openapi(createRoute({
+    method: "post", path: "/v1/projects/{id}/code-map/confirm", request: { params: Id },
+    responses: { 200: json(CodeMapSchema, "the code map with confirmedAt"), 403: errors[403], 404: errors[404], 409: errors[409] },
+  }), async (c) => c.json(await confirmCodeMap(db, c.get("actor"), c.req.valid("param").id), 200));
 
   app.openapi(createRoute({
     method: "get", path: "/v1/projects/{id}/parts/{key}",

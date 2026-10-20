@@ -1,6 +1,7 @@
 // The generated worker settings (SPEC-C-003 § 2): written per runner start into a temp folder, never into a repo, never committed.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Read-only and test commands only (REQ-012 "no git writes … including workers"). No curl / wget / nc / ssh / scp and no
  *  generic `node *` / `python3 *` / `bun *`: with the web tools gone the model reached for curl (TASK-C-029 § 5, R-4). */
@@ -13,6 +14,8 @@ export const WORKER_ALLOW = [
   "mcp__caw__card_context", "mcp__caw__comment", "mcp__caw__hand_off", "mcp__caw__set_status", "mcp__caw__ask_operator",
   // the entry worker's chat hop (REQ-013, contract v1.4)
   "mcp__caw__chat_context", "mcp__caw__locate", "mcp__caw__propose_cards", "mcp__caw__send_amendment", "mcp__caw__reply",
+  // the setup step: the entry worker saves the code map (TASK-C-041, contract v1.16). Unlisted, `-p` would deny the call.
+  "mcp__caw__save_code_map",
 ] as const;
 
 /** A deny rule beats any allow, so a broad allow added by mistake still cannot open the network. Also: `find … -exec` runs anything
@@ -47,6 +50,35 @@ export function buildSettings(hooks: readonly string[]): object {
         { matcher: "Edit|Write|MultiEdit", hooks: [run(hooks[1]!)] },
       ],
     },
+  };
+}
+
+/** The base settings plus, for each READ-ONLY folder (D-100): Edit and Write denied (permission paths use `//` for an absolute path) and the Bash sandbox's
+ *  `filesystem.denyWrite` — the two layers that refuse a write into it. Pure: the base is not changed; with no read-only folder it comes back as it is. */
+export function withReadOnly(base: any, readOnly: readonly string[]): any {
+  if (readOnly.length === 0) return base;
+  const dirs = readOnly.map((d) => d.replace(/\/+$/, ""));
+  return {
+    ...base,
+    permissions: { ...base.permissions, deny: [...(base.permissions?.deny ?? []), ...dirs.flatMap((d) => [`Edit(/${d}/**)`, `Write(/${d}/**)`])] },
+    sandbox: { ...base.sandbox, filesystem: { ...base.sandbox?.filesystem, denyWrite: [...(base.sandbox?.filesystem?.denyWrite ?? []), ...dirs] } },
+  };
+}
+
+/** the guard script the file-tool hook runs (an absolute path: the hook's cwd is the worker's folder) */
+export const READ_GUARD_SCRIPT = fileURLToPath(new URL("./read-guard.ts", import.meta.url));
+
+/** The read fence of EVERY hop (TASK-C-042 Part A, UP-3 — client data must never reach the model). The key `permissions.blockReadsOutsideWorkingDirectories` would do it
+ *  but stalls claude at start-up with our Bash sandbox, so the same fence is built from two parts that do not:
+ *   - Bash: `sandbox.filesystem.denyRead ["~/"]` and `allowRead` = the readable folders (the docs' "deny home, re-allow the narrower path" pattern);
+ *   - Read / Glob / Grep: a PreToolUse hook (read-guard.ts) with the readable folders as its ONE argument — `denyRead` does not cover the file tools.
+ *  `readable` = the project's roots + the hop's private folder. Pure: the base is not changed. */
+export function withReadGuard(base: any, readable: readonly string[]): any {
+  const hook = { matcher: "Read|Glob|Grep", hooks: [{ type: "command", command: `${shellWord(process.execPath)} ${shellWord(READ_GUARD_SCRIPT)} ${shellWord(JSON.stringify(readable))}` }] };
+  return {
+    ...base,
+    sandbox: { ...base.sandbox, filesystem: { ...base.sandbox?.filesystem, denyRead: [...(base.sandbox?.filesystem?.denyRead ?? []), "~/"], allowRead: [...(base.sandbox?.filesystem?.allowRead ?? []), ...readable] } },
+    hooks: { ...base.hooks, PreToolUse: [...(base.hooks?.PreToolUse ?? []), hook] },
   };
 }
 

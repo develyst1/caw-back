@@ -1,0 +1,1 @@
+ALTER TABLE "caw"."projects" ADD COLUMN "code_map" jsonb;

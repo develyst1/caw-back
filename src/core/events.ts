@@ -19,6 +19,8 @@ export const EVENT_TYPES = [
   "hop.heartbeat",
   // v1.14 (D-081): a worker is deleted (kept, with deletedAt — history still names them)
   "worker.deleted",
+  // v1.16 (REQ-015 R2a): the setup step's result — the structured code map — written by the entry worker, confirmed by the operator
+  "project.code_map_saved", "project.code_map_confirmed",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -31,6 +33,11 @@ export type Avatar = { body: string; color: string; eyes: string };
 type WorkerData = { id: string; name: string; roles: string[]; skills: string[]; model: string; effort: string; avatar?: Avatar | null };
 /** what `worker.created` / `worker.combined` carried before v1.10: one `role`. The reducer reads it as `roles: [role]`; the events are never rewritten. */
 type LegacyWorkerData = Omit<WorkerData, "roles"> & { role: string };
+/** v1.16: what the entry worker writes — folders, stack, commands, rules, questions (notes optional). The stamps (updatedAt, updatedBy, confirmedAt) are the core's. */
+export type CodeMapInput = {
+  folders: { name: string; kind: "fe" | "be" | "other"; note?: string }[]; stack: string[]; commands: { run: string[]; test: string[] };
+  rules: string[]; questions: { text: string; proposedDefault: string }[]; notes?: string;
+};
 export type WorkerPatch = Partial<Pick<WorkerData, "name" | "roles" | "skills" | "model" | "effort" | "avatar">>;
 export type CardStatus = "todo" | "doing" | "review" | "done" | "stuck";
 export type Mode = "manual" | "dispatcher";
@@ -68,7 +75,9 @@ export type CawEvent = Header & (
   // ONE event per Blueprint version the pull has seen: the cards it flags (possibly none) and the new latestSeenVersion
   | { type: "card.spec_changed"; data: { version: number; cardIds: string[] } }
   | { type: "project.mode_set"; data: { mode: Mode; hopBudget: number | null } }
-  | { type: "project.workspace_set"; data: { roots: string[] } }
+  | { type: "project.workspace_set"; data: { roots: string[]; readOnly?: string[] } } // readOnly ⊆ roots (v1.16); an event from before it has none → []
+  | { type: "project.code_map_saved"; data: CodeMapInput & { hopId: string } }
+  | { type: "project.code_map_confirmed"; data: Record<string, never> }
   | { type: "run.started"; data: { id: string; mode: Mode; hopBudget: number } }
   | { type: "run.finished"; data: { runId: string; stopReason: StopReason; report: string } }
   | { type: "hop.started"; data: { id: string; cardId: string | null; messageId: string | null; workerId: string; runId: string | null; claim: string | null } }

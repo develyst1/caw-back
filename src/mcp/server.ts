@@ -139,6 +139,19 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
     inputSchema: { projectId: z.string().min(1), request: z.string().min(1).describe("1–4 000 characters"), about: z.array(z.string().min(1)).max(20).optional() },
   }, ({ projectId, request, about }) => run("POST", `/v1/projects/${id(projectId)}/amendments`, { request, ...(about ? { about } : {}) }));
 
+  // v1.16 (REQ-015 R2a): the setup step's result. The model gets the project id from chat_context, as for locate / propose_cards.
+  server.registerTool("save_code_map", {
+    title: "Save the code map",
+    description: "The result of the setup step \"get to know the code\": the folders (name, fe | be | other, a short note), the stack, the run and test commands, the rules found (an empty list when there are none) and open questions with your proposed default. Only the project's entry worker, from its chat hop. Saving again replaces the map and the operator has to confirm it again.",
+    inputSchema: {
+      projectId: z.string().min(1),
+      folders: z.array(z.object({ name: z.string().min(1).max(500), kind: z.enum(["fe", "be", "other"]), note: z.string().min(1).max(500).optional() })).min(1).max(50),
+      stack: z.array(z.string().min(1).max(500)).max(50), commands: z.object({ run: z.array(z.string().min(1).max(500)).max(50), test: z.array(z.string().min(1).max(500)).max(50) }),
+      rules: z.array(z.string().min(1).max(500)).max(50), questions: z.array(z.object({ text: z.string().min(1).max(500), proposedDefault: z.string().min(1).max(500) })).max(50),
+      notes: z.string().min(1).max(2000).optional(),
+    },
+  }, ({ projectId, ...map }) => run("PUT", `/v1/projects/${id(projectId)}/code-map`, map));
+
   server.registerTool("reply", {
     title: "Reply in the chat",
     description: "Answer the operator's message (once). Optionally with questions for the operator, the proposal you made (`proposalId`) and the amendment you sent (`amendment.blueprintMessageId`).",

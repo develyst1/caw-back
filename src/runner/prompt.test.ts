@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildChatPrompt, buildPrompt, loadSkills, threadOf, writeSkillsFile } from "./prompt";
+import { buildChatPrompt, buildPrompt, folderNames, loadSkills, threadOf, writeSkillsFile } from "./prompt";
 
 const worker = { id: "w-1", name: "Blew", roles: ["BE"], skills: ["role-be"] };
 const card = { id: "c-1", number: 7, title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004" };
@@ -60,9 +60,9 @@ describe("buildChatPrompt (SPEC-C-004 § 1 step 3)", () => {
     expect(p).toContain("m-1");
     expect(p).toContain("p-1");
   });
-  test("reads the message with chat_context and locates BEFORE anything else", () => {
-    expect(p.indexOf("chat_context")).toBeGreaterThan(-1);
-    expect(p.indexOf("locate")).toBeGreaterThan(p.indexOf("chat_context"));
+  test("reads the message with chat_context and locates BEFORE anything else (steps 1 and 2; the SETUP step before them only says what NOT to call)", () => {
+    expect(p.indexOf("\n1. Read it with the MCP tool `chat_context`")).toBeGreaterThan(-1);
+    expect(p.indexOf("\n2. Call `locate`")).toBeGreaterThan(p.indexOf("\n1. Read it with the MCP tool `chat_context`"));
     expect(p).toMatch(/locate[^\n]*before anything else|before anything else[^\n]*locate/i);
   });
   test("proposes cards only for parts locate returned, amends for what is not in the spec, and always ends with one reply in Thai", () => {
@@ -159,5 +159,65 @@ describe("real line breaks in the worker's text (TASK-C-039, D-077)", () => {
     const rule = "5. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.";
     expect(count(p, rule)).toBe(1);
     expect(p.indexOf(rule)).toBeGreaterThan(p.indexOf("4. If you cannot go on"));
+  });
+});
+
+describe("the setup step and the folders (TASK-C-041, REQ-015 R2/R3, D-098)", () => {
+  const roots = ["/x/y/usb-oda", "/x/y/mc2-front"];
+  const prompt = () => buildChatPrompt({ worker, messageId: "m-1", projectId: "p-1", folders: folderNames(roots) });
+
+  test("folderNames: the last path segment; `parent/last` when two roots share one; a single root is its last segment", () => {
+    expect(folderNames(["/x/y/usb-oda", "/x/y/mc2-front"])).toEqual(["usb-oda", "mc2-front"]);
+    expect(folderNames(["/a/x/usb-oda", "/b/y/usb-oda"])).toEqual(["x/usb-oda", "y/usb-oda"]);
+    expect(folderNames(["/only/one/"])).toEqual(["one"]);
+    expect(folderNames([])).toEqual([]);
+  });
+  test("folderNames: a collision that survives one parent goes up another level; a folder that is not in a collision keeps its short name", () => {
+    expect(folderNames(["/a/x/app", "/b/x/app", "/c/lib"])).toEqual(["a/x/app", "b/x/app", "lib"]);
+  });
+  test("the folders are listed by name and the prompt holds no machine path", () => {
+    const p = prompt();
+    expect(p).toContain("Folders: usb-oda, mc2-front");
+    expect(p).not.toContain("/x/y");
+    expect(p).not.toContain("/Users/");
+  });
+  test("no roots, no `Folders:` line", () => {
+    expect(buildChatPrompt({ worker, messageId: "m-1", projectId: "p-1", folders: [] })).not.toContain("Folders:");
+    expect(buildChatPrompt({ worker, messageId: "m-1", projectId: "p-1" })).not.toContain("Folders:");
+  });
+  test("the SETUP step is there once, BEFORE step 1, and it names save_code_map, the read-only tools and the shape of the map", () => {
+    const p = prompt();
+    const at = p.indexOf("0. ");
+    expect(p.split("SETUP").length - 1).toBeGreaterThanOrEqual(1);
+    expect(p.split("\n0. ").length - 1).toBe(1);
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(p.indexOf("\n1. Read it with"));
+    const setup = p.slice(at, p.indexOf("\n1. Read it with"));
+    for (const w of ["save_code_map", "Read / Glob / Grep", "folders", "stack", "commands.run", "commands.test", "rules", "questions", "500", "reply"]) expect(setup).toContain(w);
+    expect(setup).toMatch(/do not call `locate`, `send_amendment` or `propose_cards`/);
+  });
+  test("the LAST line of step 0 sends everything that is not SETUP to step 1 with NO file read (TASK-C-041 Q2: a payroll request globbed an empty root before locate)", () => {
+    const p = prompt();
+    const step0 = p.slice(p.indexOf("\n0. "), p.indexOf("\n1. Read it with"));
+    const lines = step0.split("\n").filter((l) => l.trim() !== "");
+    expect(lines[lines.length - 1]).toBe("   Anything that is not SETUP is a feature request: do not read any file — go to step 1 (`chat_context`, then `locate`) and follow steps 1–6.");
+    expect(p.split("do not read any file").length - 1).toBe(1);
+  });
+  test("feature requests keep steps 1 to 6 as they were (REQ-013, AC-4)", () => {
+    const p = prompt();
+    for (const w of ["1. Read it with the MCP tool `chat_context`", "2. Call `locate`", "3. If `locate` returned parts", "4. Use `send_amendment` ONLY", "5. If you need decisions first", "6. Always end with exactly one `reply` in Thai."]) expect(p).toContain(w);
+    expect(p.indexOf("\n2. Call")).toBeGreaterThan(p.indexOf("\n1. Read it"));
+  });
+  test("the three reply rules: no path starting with / or ~, no ids, never send the operator to Blueprint in the text", () => {
+    const p = prompt();
+    expect(p).toMatch(/never write a path that starts with `\/` or `~`; use `<folder>\/<path inside>`/);
+    expect(p).toMatch(/never print an id/i);
+    expect(p).toMatch(/never tell the operator to go to Blueprint in your text/i);
+    expect(p).toContain("amendment.blueprintMessageId");
+  });
+  test("the closing line no longer says `no files` (reading is allowed now), but still no git writes and no web", () => {
+    const p = prompt();
+    expect(p).not.toContain("no files");
+    expect(p).toContain("No git writes, no web, no file writes");
   });
 });

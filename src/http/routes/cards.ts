@@ -4,6 +4,7 @@ import { addComment, answerQuestion, askQuestion, assign, cardContext, clearSpec
 import type { Db } from "../../db/client";
 import type { Env } from "../actor";
 import { errors } from "../errors";
+import { CodeMapSchema } from "./projects";
 
 const json = <T extends z.ZodType>(schema: T, description: string) => ({ description, content: { "application/json": { schema } } });
 const body = <T extends z.ZodType>(schema: T, description: string) => ({ ...json(schema, description), required: true as const });
@@ -27,6 +28,7 @@ const NoteSchema = z.object({
 const CardContextSchema = z.object({
   card: CardSchema, spec: z.unknown().openapi({ description: "Blueprint's PartContext, exactly as its seam returned it" }), notes: z.array(NoteSchema),
   decisions: z.array(z.object({ cardId: z.string(), number: z.number().int(), question: z.string(), answer: z.string() })),
+  codeMap: z.union([CodeMapSchema, z.null()]).openapi({ description: "the project's code map (v1.16) — null until the entry worker saves one; every card hop knows the folders" }),
 }).openapi("CardContext");
 
 const card = (description: string) => json(CardSchema, description);

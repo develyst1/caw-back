@@ -19,6 +19,10 @@ const WS = tmp("caw-hop-ws-");
 mkdirSync(join(WS, ".claude/skills/role-be"), { recursive: true });
 writeFileSync(join(WS, ".claude/skills/role-be/SKILL.md"), "BE craft");
 
+/** the runner's base settings file, which every hop extends with its own read fence (TASK-C-042) */
+const baseSettings = join(tmp("caw-hop-base-"), "settings.json");
+writeFileSync(baseSettings, JSON.stringify({ permissions: { allow: [], deny: [] }, sandbox: { enabled: true }, hooks: { PreToolUse: [] } }));
+
 async function world(over: { roots?: string[]; skills?: string[]; hopMaxMs?: number } = {}) {
   const t0 = await setup();
   const t = { ...t0, call: hopAware(t0.call) }; // a worker's write names its running hop (contract v1.5)
@@ -39,7 +43,7 @@ async function world(over: { roots?: string[]; skills?: string[]; hopMaxMs?: num
   let next: () => Child = () => fakeChild({ lines: fixture("ok") });
   const log: string[] = [];
   const deps: HopDeps = {
-    api, tmpRoot, log: (l) => log.push(l), cursors: new Map(), settingsFile: "/tmp/settings.json",
+    api, tmpRoot, log: (l) => log.push(l), cursors: new Map(), settingsFile: baseSettings,
     config: { apiUrl: "http://127.0.0.1:4530", pollMs: 10, hopMaxMs: over.hopMaxMs ?? 5000, claudeBin: "/bin/claude", workspaceRoot: WS, hooks: HOOKS.map((h) => `${WS}/scripts/hooks/${h}`) },
     spawn: (cmd, opts) => { spawned.push({ cmd, cwd: opts.cwd }); return next(); },
   };
@@ -514,13 +518,33 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     expect(h.outcome).toBe("replied");
     expect(c2.log.some((l) => l.includes("could not read the chat"))).toBe(true);
   });
-  test("the chat hop is started with no built-in tools (--tools empty)", async () => {
+  test("the chat hop is started with the READ-ONLY file tools and every project root added (TASK-C-041)", async () => {
     const c = await chatWorld();
     await run(c, async () => { await c.reply(); });
     const cmd = c.spawned[0]!.cmd;
-    expect(cmd.slice(cmd.indexOf("--tools"), cmd.indexOf("--tools") + 2)).toEqual(["--tools", ""]);
+    const roots = (await c.input()).project.workspace.roots;
+    expect(cmd.slice(cmd.indexOf("--tools"), cmd.indexOf("--tools") + 2)).toEqual(["--tools", "Read,Glob,Grep"]);
+    const at = cmd.indexOf("--add-dir");
+    expect(cmd.slice(at, at + 1 + roots.length)).toEqual(["--add-dir", ...roots]);
+    expect(cmd[at + 1 + roots.length]!.startsWith("--")).toBe(true);
   });
-  test("it runs in the hop's OWN private folder, never in the project's repo, and with no --add-dir", async () => {
+  test("a chat hop with NO roots is started with no file tool at all (--tools empty) and no --add-dir", async () => {
+    const c = await chatWorld();
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.reply(); } }));
+    const inp = await c.input();
+    await runHop(c.deps, { ...inp, project: { ...inp.project, workspace: { roots: [] } } });
+    const cmd = c.spawned[0]!.cmd;
+    expect(cmd.slice(cmd.indexOf("--tools"), cmd.indexOf("--tools") + 2)).toEqual(["--tools", ""]);
+    expect(cmd).not.toContain("--add-dir");
+  });
+  test("the chat prompt names the folders by their D-098 names and never by a machine path", async () => {
+    const c = await chatWorld();
+    await run(c, async () => { await c.reply(); });
+    const prompt = c.spawned[0]!.cmd[2]!;
+    const roots = (await c.input()).project.workspace.roots;
+    for (const r of roots) { expect(prompt).not.toContain(r); expect(prompt).toContain(r.split("/").pop()!); }
+  });
+  test("it runs in the hop's OWN private folder, never in the project's repo", async () => {
     const c = await chatWorld();
     c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.reply(); } }));
     await runHop(c.deps, await c.input());
@@ -528,7 +552,7 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     const roots = (await c.input()).project.workspace.roots;
     expect(roots.includes(cwd)).toBe(false);
     expect(cwd).toContain(`hop-${c.chatHop.id}`);
-    expect(cmd).not.toContain("--add-dir");
+    expect(cmd).toContain("--add-dir"); // the roots are READ through --add-dir; the cwd is not one of them
   });
   test("it works with NO workspace roots (a card hop is refused without them; the chat needs no folder)", async () => {
     const c = await chatWorld();
@@ -572,7 +596,7 @@ describe("what claude is started with (SPEC-C-003 § 2)", () => {
     expect(cmd).toContain("--verbose");
     expect(cmd).toContain("--strict-mcp-config");
     expect(cmd).toContain("--no-session-persistence");
-    expect(cmd.slice(at("--settings"), at("--settings") + 2)).toEqual(["--settings", "/tmp/settings.json"]);
+    expect(cmd[at("--settings") + 1]).toContain(`hop-${w.hop.id}/settings.json`); // every hop has its OWN settings file (TASK-C-042)
     expect(cmd.slice(at("--disallowedTools"), at("--disallowedTools") + 4)).toEqual(["--disallowedTools", "WebFetch", "WebSearch", cmd[at("--disallowedTools") + 3]!]);
     expect(cmd[at("--disallowedTools") + 3]!.startsWith("--")).toBe(true); // a variadic flag must be followed by a flag, or it swallows the next argument
     expect(cmd.slice(at("--add-dir"), at("--add-dir") + 2)).toEqual(["--add-dir", roots[1]!]);
@@ -590,16 +614,36 @@ describe("buildArgs / buildMcpConfig", () => {
     expect(a).not.toContain("--add-dir");
     expect(a.slice(0, 2)).toEqual(["-p", "p"]);
   });
-  test("a CHAT hop gets no built-in tool at all (--tools empty) and the coding tools denied by name; a card hop is unchanged (TASK-C-036 (c))", () => {
+  test("a CHAT hop with roots: --tools Read,Glob,Grep, --add-dir for EVERY root, and Bash / Write / Edit denied but not Read (TASK-C-041)", () => {
+    const a = buildArgs({ prompt: "p", worker, roots: ["/a", "/b"], settingsFile: "/s", mcpFile: "/m", skillsFile: null, chat: true });
+    const t = a.indexOf("--tools");
+    expect(a.slice(t, t + 2)).toEqual(["--tools", "Read,Glob,Grep"]);
+    const d = a.indexOf("--add-dir");
+    expect(a.slice(d, d + 3)).toEqual(["--add-dir", "/a", "/b"]);
+    expect(a[d + 3]!.startsWith("--")).toBe(true);
+    const dis = a.indexOf("--disallowedTools");
+    const denied = a.slice(dis + 1, a.findIndex((x, i) => i > dis && x.startsWith("--")));
+    for (const tool of ["Bash", "Write", "Edit", "NotebookEdit", "Task", "WebFetch", "WebSearch"]) expect(denied).toContain(tool);
+    for (const tool of ["Read", "Glob", "Grep"]) expect(denied).not.toContain(tool);
+  });
+  test("a card hop's args are unchanged (the exact list of today)", () => {
+    expect(buildArgs({ prompt: "p", worker, roots: ["/r"], settingsFile: "/s", mcpFile: "/m", skillsFile: null })).toEqual([
+      "-p", "p", "--model", "sonnet", "--effort", "high", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
+      "--setting-sources", "project", "--settings", "/s", "--mcp-config", "/m", "--strict-mcp-config", "--disallowedTools", "WebFetch", "WebSearch", "--no-session-persistence",
+    ]);
+  });
+  test("a CHAT hop with NO roots gets no built-in tool at all (--tools empty) and no --add-dir; the coding tools are denied by name (TASK-C-036 (c))", () => {
     const chat = buildArgs({ prompt: "p", worker, roots: [], settingsFile: "/s", mcpFile: "/m", skillsFile: null, chat: true });
+    expect(chat).not.toContain("--add-dir");
     const card = buildArgs({ prompt: "p", worker, roots: ["/r"], settingsFile: "/s", mcpFile: "/m", skillsFile: null });
     const t = chat.indexOf("--tools");
     expect(chat.slice(t, t + 2)).toEqual(["--tools", ""]);
     expect(chat[t + 2]!.startsWith("--")).toBe(true); // variadic: followed by a flag, never by the next positional
     const d = chat.indexOf("--disallowedTools");
-    const denied = chat.slice(d + 1, d + 10);
+    const end = chat.findIndex((x, i) => i > d && x.startsWith("--")); // a variadic flag is followed by a flag, never by the next positional
+    expect(end).toBeGreaterThan(d);
+    const denied = chat.slice(d + 1, end);
     for (const tool of ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "WebFetch", "WebSearch"]) expect(denied).toContain(tool);
-    expect(chat[d + 10]!.startsWith("--")).toBe(true);
     expect(card).not.toContain("--tools");
     const cd = card.indexOf("--disallowedTools");
     expect(card.slice(cd + 1, cd + 3)).toEqual(["WebFetch", "WebSearch"]);
@@ -778,5 +822,194 @@ describe("the hop heartbeat (TASK-C-038, contract v1.11, D-066)", () => {
     expect(hop.lastActivityAt).toBeDefined();
     expect(Date.parse(hop.lastActivityAt!)).toBeGreaterThanOrEqual(Date.parse(hop.startedAt));
     for (const r of results) expect(Date.parse(r.lastActivityAt)).toBeGreaterThanOrEqual(Date.parse(hop.startedAt)); // the core stamps the time: the runner sent none
+  });
+});
+
+describe("read-only folders for a card hop (TASK-C-042 Part B, D-100, REQ-015 R4a / AC-3c)", () => {
+  const withRo = async (ro: (roots: string[]) => string[] | undefined, roots?: (r: string[]) => string[]) => {
+    const w = await world();
+    const baseFile = join(tmp("caw-hop-base-"), "settings.json"); // the runner's base settings, which a read-only hop extends
+    writeFileSync(baseFile, JSON.stringify({ permissions: { allow: [], deny: [] }, sandbox: { enabled: true } }));
+    w.deps.settingsFile = baseFile;
+    const inp = await w.input();
+    const all = roots ? roots(inp.project.workspace.roots) : inp.project.workspace.roots;
+    const workspace: any = { roots: all };
+    const r = ro(all);
+    if (r !== undefined) workspace.readOnly = r;
+    await runHop(w.deps, { ...inp, project: { ...inp.project, workspace } });
+    return { w, all, cmd: w.spawned[0]?.cmd, cwd: w.spawned[0]?.cwd };
+  };
+  const settingsOf = (cmd: string[]) => JSON.parse(readFileSync(cmd[cmd.indexOf("--settings") + 1]!, "utf8"));
+
+  test("cwd = the first WRITABLE root, every other root (both kinds) is added, and the read-only one is denied Edit / Write twice (permission + sandbox)", async () => {
+    const { all, cmd, cwd, w } = await withRo((r) => [r[0]!]);
+    expect(cwd).toBe(all[1]!);
+    const at = cmd!.indexOf("--add-dir");
+    expect(cmd!.slice(at, at + 2)).toEqual(["--add-dir", all[0]!]);
+    expect(cmd![cmd!.indexOf("--settings") + 1]).not.toBe(w.deps.settingsFile); // the hop's OWN settings file
+  });
+  test("the per-hop settings file is the base plus the denies, for exactly the read-only roots", async () => {
+    const w = await world();
+    const inp = await w.input();
+    const [a, b] = inp.project.workspace.roots;
+    const base = { permissions: { allow: ["x"], deny: ["Bash(curl *)"] }, sandbox: { enabled: true } };
+    const baseFile = join(tmp("caw-hop-base-"), "settings.json");
+    writeFileSync(baseFile, JSON.stringify(base));
+    w.deps.settingsFile = baseFile;
+    let seen: any = null;
+    w.set(() => { const cmd = w.spawned[w.spawned.length - 1]!.cmd; seen = settingsOf(cmd); return fakeChild({ lines: fixture("ok") }); });
+    await runHop(w.deps, { ...inp, project: { ...inp.project, workspace: { roots: [a!, b!], readOnly: [a!] } } as any });
+    expect(seen.permissions.allow).toEqual(["x"]);
+    expect(seen.permissions.deny).toEqual(["Bash(curl *)", `Edit(/${a}/**)`, `Write(/${a}/**)`]);
+    expect(seen.sandbox.filesystem.denyWrite).toEqual([a]);
+    expect(seen.permissions.deny.join(" ")).not.toContain(b!);
+  });
+  test("the roots in the other order: still cwd = the first writable one", async () => {
+    const { all, cwd } = await withRo((r) => [r[1]!], undefined);
+    expect(cwd).toBe(all[0]!);
+  });
+  test("no read-only roots: no Edit / Write deny and no denyWrite in the hop's settings", async () => {
+    const w = await world();
+    let seen: any = null;
+    w.set(() => { seen = settingsOf(w.spawned[w.spawned.length - 1]!.cmd); return fakeChild({ lines: fixture("ok") }); });
+    await runHop(w.deps, await w.input());
+    expect(seen.permissions.deny.filter((d: string) => d.startsWith("Edit(") || d.startsWith("Write("))).toEqual([]);
+    expect(seen.sandbox.filesystem.denyWrite).toBeUndefined();
+  });
+  test("a project without `readOnly` (a core before A-094) is read as []", async () => {
+    const w = await world();
+    const inp = await w.input();
+    let seen: any = null;
+    w.set(() => { seen = settingsOf(w.spawned[w.spawned.length - 1]!.cmd); return fakeChild({ lines: fixture("ok") }); });
+    await runHop(w.deps, { ...inp, project: { ...inp.project, workspace: { roots: inp.project.workspace.roots } } });
+    expect(w.spawned[0]!.cwd).toBe(inp.project.workspace.roots[0]!);
+    expect(seen.sandbox.filesystem.denyWrite).toBeUndefined();
+  });
+  test("every root read-only: nowhere to work — stopped with today's noRoots note, claude not spawned", async () => {
+    const { w } = await withRo((r) => [...r]);
+    expect(w.spawned).toHaveLength(0);
+    const h = await w.finished();
+    expect([h.outcome, h.note]).toEqual(["stopped", NOTES.noRoots]);
+  });
+  test("a CHAT hop is unchanged by read-only roots: its private cwd, every root added, no write denies (it writes nothing anyway)", async () => {
+    const w = await world();
+    await w.api.finishHop(w.hop.id, { outcome: "commented" });
+    await w.call("PUT", `/v1/projects/${w.project.id}/chain/entry`, { workerId: w.worker.id });
+    const msg = (await w.call("POST", `/v1/projects/${w.project.id}/chat`, { text: "x" })).json;
+    const chatHop = await w.api.startHop(w.project.id, { messageId: msg.id, workerId: w.worker.id, claim: "inst-1" });
+    const inp = await w.input();
+    await runHop(w.deps, { project: { ...inp.project, workspace: { roots: inp.project.workspace.roots, readOnly: [inp.project.workspace.roots[0]!] } } as any, hop: chatHop, worker: inp.worker });
+    const { cmd, cwd } = w.spawned[0]!;
+    expect(cwd).toContain(`hop-${chatHop.id}`);
+    expect(cmd[cmd.indexOf("--settings") + 1]).toContain(`hop-${chatHop.id}/settings.json`);
+    const at = cmd.indexOf("--add-dir");
+    expect(cmd.slice(at, at + 3)).toEqual(["--add-dir", ...inp.project.workspace.roots]);
+  });
+});
+
+describe("the read fence of every hop (TASK-C-042 Part A, UP-3: client data must never reach the model)", () => {
+  const settingsOf = (cmd: string[]) => JSON.parse(readFileSync(cmd[cmd.indexOf("--settings") + 1]!, "utf8"));
+  /** the settings file is removed with the hop folder, so it is read at spawn time */
+  async function fence(chat: boolean) {
+    const w = await world();
+    const inp = await w.input();
+    let seen: any = null;
+    let hopDir = "";
+    w.set(() => { const s = w.spawned[w.spawned.length - 1]!; seen = settingsOf(s.cmd); hopDir = s.cmd[s.cmd.indexOf("--mcp-config") + 1]!.replace(/\/mcp\.json$/, ""); return fakeChild({ lines: fixture("ok") }); });
+    if (!chat) await runHop(w.deps, inp);
+    else {
+      await w.api.finishHop(w.hop.id, { outcome: "commented" });
+      await w.call("PUT", `/v1/projects/${w.project.id}/chain/entry`, { workerId: w.worker.id });
+      const msg = (await w.call("POST", `/v1/projects/${w.project.id}/chat`, { text: "x" })).json;
+      const chatHop = await w.api.startHop(w.project.id, { messageId: msg.id, workerId: w.worker.id, claim: "inst-1" });
+      await runHop(w.deps, { project: inp.project, hop: chatHop, worker: inp.worker });
+    }
+    return { seen, roots: inp.project.workspace.roots, hopDir };
+  }
+  for (const chat of [false, true]) {
+    test(`a ${chat ? "CHAT" : "CARD"} hop: ~/ denied for Bash reads, the roots and its own folder re-allowed, the file-tool guard hook with the same folders, and no blockReads key`, async () => {
+      const { seen, roots, hopDir } = await fence(chat);
+      expect(seen.sandbox.filesystem.denyRead).toEqual(["~/"]);
+      for (const d of [...roots, hopDir]) expect(seen.sandbox.filesystem.allowRead).toContain(d);
+      const hook = seen.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep");
+      expect(hook).toBeDefined();
+      const args = JSON.parse(hook.hooks[0].command.slice(hook.hooks[0].command.indexOf("'[") + 1, -1));
+      for (const d of [...roots, hopDir]) expect(args).toContain(d);
+      expect(seen.permissions.blockReadsOutsideWorkingDirectories).toBeUndefined();
+      expect(seen.sandbox.enabled).toBe(true); // the sandbox stays on
+    });
+  }
+  test("a base file that cannot be read: the hop FAILS (it never runs on settings it could not read, so never unfenced) and claude is not started", async () => {
+    const w = await world();
+    w.deps.settingsFile = join(tmp("caw-hop-nobase-"), "missing.json");
+    await runHop(w.deps, await w.input());
+    expect(w.spawned).toHaveLength(0);
+    expect((await w.finished()).outcome).toBe("failed");
+  });
+});
+
+describe("read-guard refusals are SOFT, counted, and the 3rd stops the hop (TASK-C-042 Q2, Sector 2026-10-20)", () => {
+  /** the recorded pair from the real run (fixtures/read-guard.stream.jsonl: a Read of a home canary and the hook's refusal), with a fresh tool_use id each time */
+  const refusal = (n: number): string[] => fixture("read-guard").map((l) => l.split("toolu_01WS8m3xoZw3QUN4sHqrfiwB").join(`toolu_refused_${n}`));
+  const refusals = (k: number) => Array.from({ length: k }, (_, i) => refusal(i)).flat();
+  const WORDS = (n: number) => `อ่านนอกโฟลเดอร์ถูกปฏิเสธ ${n} ครั้ง`;
+  const comment = (w: Awaited<ReturnType<typeof world>>) => async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); };
+
+  test("the recorded line is a hook block that names read-guard (the fixture is what the real claude printed)", () => {
+    expect(fixture("read-guard").join("\n")).toContain("PreToolUse:Read hook error");
+    expect(fixture("read-guard").join("\n")).toContain("read-guard");
+  });
+  test("1 refusal: the hop goes on and ends normally, with the count in its note; the child is not killed", async () => {
+    const w = await world();
+    let child!: ReturnType<typeof fakeChild>;
+    w.set(() => (child = fakeChild({ lines: [...refusals(1), ...fixture("ok")], before: comment(w) }))); // built when claude is spawned: its comment must come after the hop's start
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect([h.outcome, h.note]).toEqual(["commented", WORDS(1)]);
+    expect(child.killed).toBe(false);
+    expect(w.log.some((l) => l.includes("read-guard") && l.includes("refused"))).toBe(true);
+  });
+  test("2 refusals: still goes on, note says 2", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: [...refusals(2), ...fixture("ok")], before: comment(w) }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect([h.outcome, h.note]).toEqual(["commented", WORDS(2)]);
+  });
+  test("the 3rd refusal in one hop stops it with today's blocked note, naming what the worker tried", async () => {
+    const w = await world();
+    const child = fakeChild({ lines: [...refusals(3), ...fixture("ok")], hang: true });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("stopped");
+    expect(h.note.startsWith("หยุดไว้: Blew พยายาม Read")).toBe(true);
+    expect(child.killed).toBe(true);
+  });
+  test("a git-push block still stops at once, even after a soft read-guard refusal (unchanged)", async () => {
+    const w = await world();
+    const child = fakeChild({ lines: [...refusals(1), ...fixture("push-absolute-hooks").slice(0, 15)], hang: true });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("stopped");
+    expect(h.note).toContain("git push");
+    expect(child.killed).toBe(true);
+  });
+  test("a hop that FAILS after soft refusals carries both: the refusal count and the tool summary", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: [...refusals(1), ...fixture("ok")] }));
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("failed");
+    expect(h.note).toContain(NOTES.noResult);
+    expect(h.note).toContain(WORDS(1));
+    expect(h.note).toContain("tools:");
+  });
+  test("no refusal, no words in the note", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: fixture("ok"), before: comment(w) }));
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).note).toBe("");
   });
 });

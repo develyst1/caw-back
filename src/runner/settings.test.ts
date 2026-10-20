@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOOKS } from "./config";
-import { WORKER_ALLOW, buildSettings, writeSettings } from "./settings";
+import { READ_GUARD_SCRIPT, WORKER_ALLOW, buildSettings, withReadGuard, withReadOnly, writeSettings } from "./settings";
 
 const ROOT = "/ws/ai-agent-workspace";
 const hookPaths = HOOKS.map((h) => `${ROOT}/scripts/hooks/${h}`);
@@ -33,6 +33,7 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
     expect(mcp).toEqual([
       "mcp__caw__card_context", "mcp__caw__comment", "mcp__caw__hand_off", "mcp__caw__set_status", "mcp__caw__ask_operator",
       "mcp__caw__chat_context", "mcp__caw__locate", "mcp__caw__propose_cards", "mcp__caw__send_amendment", "mcp__caw__reply", // the entry worker's chat hop (TASK-C-034)
+      "mcp__caw__save_code_map", // the setup step's result (TASK-C-041, contract v1.16)
     ]);
   });
 
@@ -70,6 +71,17 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
     expect(s.env).toEqual({ ENABLE_TOOL_SEARCH: "false" }); // MCP tools loaded upfront, no ToolSearch turn (TASK-C-036; code.claude.com/docs/en/mcp, Configure tool search)
   });
 
+  test("the rest of `permissions` is exactly what it was: the allow list and the deny list, byte for byte (TASK-C-042 changes nothing else)", () => {
+    const { blockReadsOutsideWorkingDirectories, ...rest } = s.permissions;
+    expect(Object.keys(rest).sort()).toEqual(["allow", "deny"]);
+    expect(rest.allow).toEqual([...WORKER_ALLOW]);
+    expect(rest.deny).toEqual([
+      "Bash(curl *)", "Bash(wget *)", "Bash(nc *)", "Bash(ssh *)", "Bash(scp *)",
+      "Bash(find * -exec*)", "Bash(find * -execdir*)", "Bash(git diff --output*)",
+    ]);
+    expect(Object.keys(s).sort()).toEqual(["enabledPlugins", "env", "hooks", "permissions", "sandbox"]);
+  });
+
   test("a hook path with a space is single-quoted so the shell runs one file", () => {
     const q: any = buildSettings(["/my ws/scripts/hooks/a.sh", "/my ws/scripts/hooks/b.sh", "/my ws/scripts/hooks/c.sh"]);
     expect(commands(q.hooks.PreToolUse[0])[0]).toBe("'/my ws/scripts/hooks/a.sh'");
@@ -97,5 +109,87 @@ describe("temp files are private to the user (security review)", () => {
       expect(statSync(dir).mode & 0o777).toBe(0o700);
       expect(statSync(file).mode & 0o777).toBe(0o600);
     } finally { rmSync(base, { recursive: true }); }
+  });
+});
+
+describe("withReadOnly — the per-hop settings for read-only folders (TASK-C-042 Part B, D-100)", () => {
+  const base: any = buildSettings(hookPaths);
+  const before = JSON.stringify(base);
+
+  test("no read-only folder: the base settings come back as they are", () => {
+    expect(withReadOnly(base, [])).toEqual(base);
+  });
+  test("each read-only folder gets Edit and Write denied (permission paths: // for absolute) and the sandbox's denyWrite — for Bash", () => {
+    const s: any = withReadOnly(base, ["/Users/x/spec", "/srv/api"]);
+    for (const d of ["Edit(//Users/x/spec/**)", "Write(//Users/x/spec/**)", "Edit(//srv/api/**)", "Write(//srv/api/**)"]) expect(s.permissions.deny).toContain(d);
+    expect(s.sandbox.filesystem.denyWrite).toEqual(["/Users/x/spec", "/srv/api"]);
+  });
+  test("everything else stays: the original deny entries, the allow list, the sandbox flags, the hooks, the plugins and the env", () => {
+    const s: any = withReadOnly(base, ["/Users/x/spec"]);
+    expect(s.permissions.deny.slice(0, base.permissions.deny.length)).toEqual(base.permissions.deny);
+    expect(s.permissions.allow).toEqual(base.permissions.allow);
+    expect(s.sandbox).toMatchObject(base.sandbox);
+    expect(s.hooks).toEqual(base.hooks);
+    expect(s.enabledPlugins).toEqual(base.enabledPlugins);
+    expect(s.env).toEqual(base.env);
+  });
+  test("the base object is not changed (a pure function)", () => {
+    withReadOnly(base, ["/a", "/b"]);
+    expect(JSON.stringify(base)).toBe(before);
+  });
+  test("a trailing slash does not produce a double slash", () => {
+    const s: any = withReadOnly(base, ["/Users/x/spec/"]);
+    expect(s.permissions.deny).toContain("Edit(//Users/x/spec/**)");
+    expect(s.sandbox.filesystem.denyWrite).toEqual(["/Users/x/spec"]);
+  });
+});
+
+describe("withReadGuard — the read fence of every hop (TASK-C-042 Part A, UP-3)", () => {
+  const base: any = buildSettings(hookPaths);
+  const before = JSON.stringify(base);
+  const readable = ["/work/usb-oda", "/work/mc2-front", "/tmp/caw-runner-x/hop-1"];
+
+  test("the Bash sandbox: ~/ is denied for reads, and exactly the readable folders are re-allowed", () => {
+    const s: any = withReadGuard(base, readable);
+    expect(s.sandbox.filesystem.denyRead).toEqual(["~/"]);
+    expect(s.sandbox.filesystem.allowRead).toEqual(readable);
+  });
+  test("the file tools: a PreToolUse hook on Read|Glob|Grep runs the guard with the readable folders as ONE argument (JSON), not through the environment", () => {
+    const s: any = withReadGuard(base, readable);
+    const m = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep");
+    expect(m.hooks).toHaveLength(1);
+    const cmd: string = m.hooks[0].command;
+    expect(cmd.startsWith(`${process.execPath} `)).toBe(true);
+    expect(cmd).toContain(READ_GUARD_SCRIPT);
+    expect(cmd.endsWith(`'${JSON.stringify(readable)}'`)).toBe(true);
+    expect(READ_GUARD_SCRIPT.startsWith("/")).toBe(true);
+    expect(READ_GUARD_SCRIPT.endsWith("src/runner/read-guard.ts")).toBe(true);
+    expect(m.hooks[0]).not.toHaveProperty("env"); // no environment variable carries the list
+    expect(cmd).not.toContain("$");
+  });
+  test("the existing hooks (Bash, Edit|Write|MultiEdit) are still there, in order, before the new one", () => {
+    const s: any = withReadGuard(base, readable);
+    expect(s.hooks.PreToolUse.slice(0, base.hooks.PreToolUse.length)).toEqual(base.hooks.PreToolUse);
+    expect(s.hooks.PreToolUse).toHaveLength(base.hooks.PreToolUse.length + 1);
+  });
+  test("everything else is as it was; no `blockReadsOutsideWorkingDirectories` (it stalls claude, TASK-C-042); the sandbox stays ON", () => {
+    const s: any = withReadGuard(base, readable);
+    expect(s.permissions).toEqual(base.permissions);
+    expect(s.permissions.blockReadsOutsideWorkingDirectories).toBeUndefined();
+    expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    expect(s.enabledPlugins).toEqual(base.enabledPlugins);
+    expect(s.env).toEqual(base.env);
+  });
+  test("it stacks with withReadOnly (denyWrite and denyRead sit side by side) and does not change the base", () => {
+    const s: any = withReadGuard(withReadOnly(base, ["/work/spec"]), readable);
+    expect(s.sandbox.filesystem.denyWrite).toEqual(["/work/spec"]);
+    expect(s.sandbox.filesystem.denyRead).toEqual(["~/"]);
+    expect(s.permissions.deny).toContain("Edit(//work/spec/**)");
+    expect(JSON.stringify(base)).toBe(before);
+  });
+  test("a readable folder with a space is single-quoted as part of the JSON argument", () => {
+    const s: any = withReadGuard(base, ["/my work/app"]);
+    const cmd: string = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep").hooks[0].command;
+    expect(cmd.endsWith(`'["/my work/app"]'`)).toBe(true);
   });
 });

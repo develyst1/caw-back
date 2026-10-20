@@ -42,9 +42,9 @@ test("POST /v1/projects: 201 with the Project — ids and version only; the even
   expect(r.status).toBe(201);
   expect(r.json).toMatchObject({
     name: BP_NAME, blueprintProjectId: BP_PROJECT, version: 1, latestSeenVersion: 1, mode: "manual", hopBudget: 0, hopsUsed: 0,
-    entryWorkerId: null, workspace: { roots: [] },
+    entryWorkerId: null, workspace: { roots: [], readOnly: [] }, codeMap: null,
   });
-  expect(Object.keys(r.json).sort()).toEqual(["blueprintProjectId", "createdAt", "entryWorkerId", "hopBudget", "hopsUsed", "id", "latestSeenVersion", "mode", "name", "version", "workspace"]);
+  expect(Object.keys(r.json).sort()).toEqual(["blueprintProjectId", "codeMap", "createdAt", "entryWorkerId", "hopBudget", "hopsUsed", "id", "latestSeenVersion", "mode", "name", "version", "workspace"]);
   expect(fake.mode.calls).toEqual([`GET /v1/projects/${BP_PROJECT}`, `GET /v1/projects/${BP_PROJECT}/versions/1`]);
   const [ev] = await db.select().from(events);
   expect([ev!.type, ev!.actor, ev!.projectId]).toEqual(["project.created", "operator", r.json.id]);

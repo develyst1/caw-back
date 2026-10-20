@@ -16,7 +16,7 @@ const Skills = z.array(z.string().trim().min(1)).min(1).max(50);
 
 export const WorkerSchema = z.object({
   id: z.string(), name: z.string(), roles: z.array(RoleSchema).min(1), role: RoleSchema.openapi({ description: "roles[0] — deprecated, read `roles`" }), skills: z.array(z.string()),
-  model: z.enum(["opus", "sonnet", "haiku"]), effort: z.enum(["low", "medium", "high"]), avatar: AvatarSchema.nullable(), combinedFrom: z.array(z.string()).nullable(),
+  model: z.enum(["opus", "sonnet", "haiku"]), effort: z.enum(["low", "medium", "high"]), avatar: z.union([AvatarSchema, z.null()]), combinedFrom: z.array(z.string()).nullable(),
   deletedAt: z.string().nullable().openapi({ description: "set when the operator deleted the worker (v1.14); the list still shows them so history can name them — screens hide them from every picker" }),
 }).openapi("Worker");
 
@@ -30,7 +30,7 @@ export function workerRoutes(app: OpenAPIHono<Env>, db: Db) {
       skills: Skills,
       model: z.enum(["opus", "sonnet", "haiku"]).optional(),
       effort: z.enum(["low", "medium", "high"]).optional(),
-      avatar: AvatarSchema.nullable().optional(),
+      avatar: z.union([AvatarSchema, z.null()]).optional(),
     }).refine((b) => (b.roles === undefined) !== (b.role === undefined), "send exactly one of roles / role"), "a worker; model / effort default to the strongest of the roles' defaults"), required: true } },
     responses: { 201: json(WorkerSchema, "created"), 400: errors[400], 403: errors[403], 409: errors[409] },
   }), async (c) => {
@@ -42,7 +42,7 @@ export function workerRoutes(app: OpenAPIHono<Env>, db: Db) {
     method: "patch", path: "/v1/workers/{id}", request: { params: z.object({ id: z.string() }), body: { ...json(z.object({
       name: Name.optional(), roles: RolesSchema.optional(), skills: Skills.optional(),
       model: z.enum(["opus", "sonnet", "haiku"]).optional(), effort: z.enum(["low", "medium", "high"]).optional(),
-      avatar: AvatarSchema.nullable().optional(),
+      avatar: z.union([AvatarSchema, z.null()]).optional(),
     }).refine((b) => Object.values(b).some((v) => v !== undefined), "send at least one of name / roles / skills / model / effort / avatar"), "the fields to change — only what is sent changes"), required: true } },
     responses: { 200: json(WorkerSchema, "the worker after the change"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
   }), async (c) => c.json(await updateWorker(db, c.get("actor"), c.req.valid("param").id, c.req.valid("json")), 200));
