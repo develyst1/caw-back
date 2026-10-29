@@ -7,6 +7,7 @@ import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutc
 import type { RunnerConfig } from "./config";
 import { type Thread, buildChatPrompt, buildPrompt, folderNames, loadSkills, threadOf, writeSkillsFile } from "./prompt";
 import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
+import type { Code } from "./bash-policy";
 import { redact } from "./redact";
 import { createScreenSender, liveRedact, screenLines } from "./screen";
 import { withReadGuard, withReadOnly } from "./settings";
@@ -20,10 +21,12 @@ export const NOTES = {
   skillMissing: (name: string) => `ไม่พบสกิล ${name}`,
   timeout: "หมดเวลา — ก้าวนี้ใช้เวลานานเกินไป",
   noResult: "ก้าวนี้ไม่ได้ทิ้งผลงานไว้",
-  blocked: (worker: string, action: string) => `หยุดไว้: ${worker} พยายาม ${action} ซึ่งไม่อนุญาต`,
+  /** REQ-111 wording (PM, 2026-10-29): one sentence per refusal, the reason from REFUSAL_REASON below; at most 3 distinct, then `refusedMore` */
+  refused: (reason: string) => `คำสั่งนี้ทำไม่ได้: ${reason} — ทำต่อด้วยวิธีอื่น`,
+  refusedMore: (n: number) => `(อีก ${n} ครั้ง)`,
+  /** the 10th refusal in one hop stops it (SPEC-108 D4, REQ-111 Q2) */
+  refusalCap: "หยุดไว้: คำสั่งถูกปฏิเสธครบ 10 ครั้งในก้าวเดียว",
   interrupted: "ถูกขัดจังหวะเพราะตัวรันเริ่มใหม่",
-  /** `[team-proposed]` (TASK-C-042 Q2): a read outside the project's folders was refused n times and the hop went on */
-  readsRefused: (n: number) => `อ่านนอกโฟลเดอร์ถูกปฏิเสธ ${n} ครั้ง`,
   fault: (message: string) => `ตัวรันขัดข้อง: ${message}`,
   /** `[PM-decided]` (SPEC-103 Q4, Porter 2026-10-29): a project folder is not under CAW_WORKSPACE_ROOT — the hop is refused before claude starts */
   outsideWorkspace: "โฟลเดอร์งานต้องอยู่ใน CAW_WORKSPACE_ROOT — ก้าวนี้ไม่ได้เริ่ม",
@@ -80,11 +83,51 @@ export const bunSpawn: Spawner = (cmd, { cwd, env }) => {
 /** how often a hop's stream may tell the core it is alive (contract v1.11; the core itself writes at most once a minute) */
 const HEARTBEAT_MS = 30_000;
 
-/** how many read-guard refusals one hop may take before it is stopped: the setup step explores the folders, so a peek one step too far is told no; three is probing */
-const READ_GUARD_STOP_AT = 3;
-/** a hook block printed by our own read guard (`PreToolUse:<Read|Glob|Grep|Bash> hook error: [… read-guard.ts …]`) — the only block that is not a stop at once. Bash joined in TASK-112
- *  (SA-decided): the command is refused either way; the other Bash guard hooks do not name read-guard, so they still stop the hop at once. */
-const isReadGuardBlock = (b: { kind: string; text: string }) => b.kind === "hook" && /^PreToolUse:(Read|Glob|Grep|Bash) hook error:/.test(b.text.trim()) && b.text.includes("read-guard");
+/** SPEC-108 D4: no refusal ends a hop — claude has already handed the refusal to the model, which can try another way. The 10th one in a hop stops it (a worker that tries ten
+ *  commands in a row is probing, not working). */
+const REFUSAL_CAP = 10;
+
+/** What was refused: one of our hook's codes, `guard` (a workspace guard hook), or `tool` (claude itself refused a tool in this step). `detail` is the path, program, character or tool named. */
+type RefusalKind = Code | "guard" | "tool";
+type Refusal = { kind: RefusalKind; detail: string };
+const CODES = "shell_feature|not_allowed|git_write|inline_code|network|outside|read_only";
+
+/** One stream block → what was refused. Our hook's stderr is `caw-refused <code>: <English with the detail in the FIRST double quotes>` (read-guard.ts; the file tools' `outside` line has the
+ *  path unquoted: `read guard: <path> is outside …`). A hook block without that prefix is a workspace guard hook; a `permission` block is claude refusing a tool. */
+export function refusalOf(b: { kind: string; tool: string; text: string }): Refusal {
+  if (b.kind === "permission") return { kind: "tool", detail: b.tool };
+  const hit = new RegExp(`caw-refused (${CODES}): ([\\s\\S]*)`).exec(b.text);
+  if (!hit) return { kind: "guard", detail: "" };
+  const rest = hit[2]!;
+  return { kind: hit[1] as Code, detail: /"([^"]*)"/.exec(rest)?.[1] ?? /read guard: (.+?) is outside/.exec(rest)?.[1] ?? "" };
+}
+
+/** The Thai {เหตุผล} per refusal, one table — REQ-111 Q2, all ten accepted as written by the PM (2026-10-29) */
+export const REFUSAL_REASON: Record<RefusalKind, (detail: string) => string> = {
+  outside: (d) => `${d} อยู่นอกโฟลเดอร์งาน`,
+  read_only: (d) => `โฟลเดอร์ ${d} อ่านได้อย่างเดียว`,
+  not_allowed: (d) => `${d} ไม่ใช่คำสั่งที่ worker ใช้ได้`,
+  shell_feature: (d) => `ใช้ ${d} ในคำสั่งไม่ได้`,
+  git_write: () => "worker เขียน git ไม่ได้",
+  network: () => "ออกเน็ตได้แค่ 127.0.0.1 กับที่ลงแพ็กเกจ",
+  inline_code: () => "รันโค้ดจากบรรทัดคำสั่งไม่ได้ — เขียนเป็นไฟล์ก่อน",
+  guard: () => "กฎความปลอดภัยกันไว้",
+  tool: (d) => `เครื่องมือ ${d} ใช้ในก้าวนี้ไม่ได้`,
+};
+
+/** The hop note's refusal part: each DISTINCT (kind, detail) as the PM's sentence, at most 3, then `(อีก n ครั้ง)` for the refusals those three do not cover; redacted like the rest of the note. */
+export function refusedNote(list: readonly Refusal[]): string {
+  if (list.length === 0) return "";
+  const key = (r: Refusal) => `${r.kind}\u0000${r.detail}`;
+  const distinct = new Map<string, Refusal>();
+  for (const r of list) if (!distinct.has(key(r))) distinct.set(key(r), r);
+  const shown = [...distinct.values()].slice(0, 3);
+  const shownKeys = new Set(shown.map(key));
+  const more = list.filter((r) => !shownKeys.has(key(r))).length;
+  const parts = shown.map((r) => NOTES.refused(REFUSAL_REASON[r.kind](r.detail)));
+  if (more > 0) parts.push(NOTES.refusedMore(more));
+  return redact(parts.join(" · "));
+}
 
 /** Folder confinement (TASK-112, owner 13:41: no Bash sandbox, "จัดวาง folder"): every project folder, by REAL path, must be inside CAW_WORKSPACE_ROOT — and not that folder
  *  itself, nor inside its `scripts/` (the guard hooks) or `.claude/` (the skills). Returns the first folder that is not, or null. A folder that does not exist yet is judged as given. */
@@ -283,7 +326,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
     const settingsFile = join(dir, "settings.json");
     const base = JSON.parse(readFileSync(deps.settingsFile, "utf8"));
-    writeFileSync(settingsFile, `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir)), null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(settingsFile, `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir), messageId === null ? readOnly : []), null, 2)}\n`, { mode: 0o600 });
     const args = buildArgs({ prompt, worker, roots: messageId !== null ? project.workspace.roots : roots, settingsFile, mcpFile, skillsFile, chat: messageId !== null });
 
     // A child must never be started by a runner that is already stopping: nothing would be left to kill it.
@@ -294,7 +337,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
     const state = new StreamState();
     const end = { note: null as string | null };
-    let readRefusals = 0; // read-guard refusals so far (soft: counted and logged, the hop goes on)
+    const refusals: Refusal[] = []; // every block in this hop, in order (SPEC-108 D4): none ends the hop except the REFUSAL_CAP-th
     // Heartbeat (contract v1.11, D-066): while claude's stream prints, tell the core the hop is alive — at most one every 30 s, never awaited, never a timer
     // (a hung child prints nothing, so it must not look alive). `lastSent` starts at the spawn: `hop.started` already stamped the first activity.
     const clock = () => (deps.now ?? (() => new Date()))().getTime();
@@ -331,11 +374,16 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
         }
         const blocks = state.feed(line);
         for (const b of end.note === null ? blocks : []) {
-          if (isReadGuardBlock(b) && ++readRefusals < READ_GUARD_STOP_AT) { log(`hop ${hop.id}: read-guard refused a read (${readRefusals} of ${READ_GUARD_STOP_AT - 1} allowed): ${b.action}`); continue; }
-          end.note = NOTES.blocked(worker.name, b.action);
-          log(`hop ${hop.id}: ${b.kind} block: ${b.text.trim().slice(0, 400)}`);
-          stop();
-          return false;
+          // a refusal (our hook, a workspace guard hook, or claude's own permission deny): claude has already told the model, so the hop goes on — recorded for the note
+          const r = refusalOf(b);
+          refusals.push(r);
+          log(`hop ${hop.id}: refused ${refusals.length} of ${REFUSAL_CAP} — ${r.kind}${r.detail === "" ? "" : ` ${r.detail}`}: ${b.action}`);
+          if (refusals.length >= REFUSAL_CAP) {
+            end.note = NOTES.refusalCap;
+            log(`hop ${hop.id}: ${REFUSAL_CAP} refusals in one hop — hop stopped`);
+            stop();
+            return false;
+          }
         }
         if (state.limit && end.note === null) {
           // the subscription limit (REQ-012 R6): no point waiting for a child that cannot go on
@@ -368,7 +416,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     if (deps.stopping?.()) { log(`hop ${hop.id}: runner is stopping — left running for the next runner to interrupt`); return hop; }
     // a hop that ended without a result says which tools it used, so a reader of the hop (not only of the trace) can see where it went
     const tools = toolSummary(lines, messageId !== null ? ["locate", "reply"] : []);
-    const refused = readRefusals > 0 ? NOTES.readsRefused(readRefusals) : "";
+    const refused = refusedNote(refusals);
     const withTools = (note: string) => [note, refused, tools].filter((t) => t !== "").join(" · ").slice(0, 2000);
     const tokens = { ...(sum.tokensIn === null ? {} : { tokensIn: sum.tokensIn }), ...(sum.tokensOut === null ? {} : { tokensOut: sum.tokensOut }) };
     // the limit note is REQ-012's fixed Thai wording and its cause is known; every other stop says where the hop had got to

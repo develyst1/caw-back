@@ -405,10 +405,11 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     const mk = (title: string) => newCard(w.call, w.project.id, { title, assigneeId: w.worker.id }).then((r) => r.json);
     const A = w.card, B = await mk("B asks"), C = await mk("C is blocked");
     await w.call("PATCH", `/v1/projects/${w.project.id}/mode`, { mode: "dispatcher", hopBudget: 10 });
-    const blockLines = [
-      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "git push origin HEAD" } }] } }),
-      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "PreToolUse:Bash hook error: [/x/block-irreversible.sh]: Blocked (git push)" }] } }),
-    ];
+    // was: ONE block-irreversible hook block stopped the hop. TASK-118 / SPEC-108 D4: no refusal ends a hop, the 10th does — so ten distinct blocks (same shape, distinct tool ids).
+    const blockLines = Array.from({ length: 10 }, (_, i) => [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${i}`, name: "Bash", input: { command: "git push origin HEAD" } }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: `t${i}`, is_error: true, content: "PreToolUse:Bash hook error: [/x/block-irreversible.sh]: Blocked (git push)" }] } }),
+    ]).flat();
     w.set((cmd) => {
       const id = /Your card is (\S+)/.exec(cmd[2]!)![1]!;
       if (id === C.id) return fakeChild({ lines: blockLines, hang: true });

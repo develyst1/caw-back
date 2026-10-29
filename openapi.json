@@ -121,6 +121,29 @@
             ],
             "type": "string"
           },
+          "stoppedMidway": {
+            "description": "a card back in `todo` after a hop that failed, was stopped or was interrupted: that hop, when it ended, and the leading sentence of its note; null otherwise (SPEC-108 D7)",
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "hopId": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hopId",
+              "at",
+              "reason"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "title": {
             "type": "string"
           },
@@ -149,6 +172,7 @@
           "question",
           "answer",
           "workable",
+          "stoppedMidway",
           "createdAt",
           "updatedAt"
         ],

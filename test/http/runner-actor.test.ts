@@ -28,7 +28,8 @@ test("a runner opens and finishes a run, starts + claims + finishes a hop: 201 /
   expect([fin.status, fin.json.stopReason]).toEqual([200, "nothing_workable"]);
 
   const runnerEvents = (await db.select().from(events)).filter((e) => e.actor === R).map((e) => e.type);
-  expect(runnerEvents).toEqual(["run.started", "hop.started", "hop.claimed", "hop.finished", "run.finished"]);
+  // + "card.status_set": the hop's card was `doing` when the runner finished the hop, so the same write sends it back to `todo` as the same actor (TASK-119, SPEC-108 D6)
+  expect(runnerEvents).toEqual(["run.started", "hop.started", "hop.claimed", "hop.finished", "card.status_set", "run.finished"]);
   expect((await call("POST", `${P.replace("/v1", "/v1")}/rebuild-check`, undefined, null)).json).toEqual({ same: true });
   void project;
 });

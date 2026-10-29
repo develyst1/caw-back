@@ -33,7 +33,8 @@ test("POST cards: 201 Card (number from 1, todo, workable, anchor) · assignee m
     projectId: project.id, number: 1, kind: "work", title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004", status: "todo", assigneeId: a.id,
     anchor: { key: "STEP-004", version: 1 }, specChangedVersion: null, dependsOn: [], question: null, answer: null, workable: true,
   });
-  expect(Object.keys(r.json).sort()).toEqual(["anchor", "answer", "assigneeId", "createdAt", "dependsOn", "id", "kind", "number", "projectId", "question", "specChangedVersion", "status", "title", "todo", "updatedAt", "workable"]);
+  expect(Object.keys(r.json).sort()).toEqual(["anchor", "answer", "assigneeId", "createdAt", "dependsOn", "id", "kind", "number", "projectId", "question", "specChangedVersion", "status", "stoppedMidway", "title", "todo", "updatedAt", "workable"]); // + stoppedMidway (TASK-119, SPEC-108 D7)
+  expect(r.json.stoppedMidway).toBeNull();
   expect((await newCard(call, project.id)).json).toMatchObject({ number: 2, assigneeId: null });
   const stranger = (await call("POST", "/v1/workers", { name: "Zed", role: "BE", skills: ["x"] })).json;
   const nm = await newCard(call, project.id, { assigneeId: stranger.id });

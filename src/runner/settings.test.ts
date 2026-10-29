@@ -25,10 +25,13 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
     for (const c of [...commands(bash), ...commands(edit)]) expect(c.startsWith("/")).toBe(true);
   });
 
-  test("the allow list is the read-only and test commands, plus CAW's five MCP tools and nothing else", () => {
+  // was: "the allow list is the read-only and test commands, plus CAW's five MCP tools and nothing else" (Bash(git status *), Bash(bun test *) …). TASK-118 / SPEC-108 D1, owner REQ-111 Q5 = A:
+  // `Bash` is allowed as a whole and the hook (bash-policy.ts) decides what runs.
+  test("the allow list is `Bash` as a whole plus CAW's MCP tools by name, and nothing else — the hook decides which commands run", () => {
     expect(s.permissions.allow).toEqual([...WORKER_ALLOW]);
-    expect(s.permissions.allow).toContain("Bash(git status *)");
-    expect(s.permissions.allow).toContain("Bash(bun test *)");
+    expect((s.permissions.allow as string[]).filter((a) => a.startsWith("Bash"))).toEqual(["Bash"]); // one entry, no per-command list
+    expect(s.permissions.allow[0]).toBe("Bash");
+    expect((s.permissions.allow as string[]).filter((a) => !a.startsWith("Bash") && !a.startsWith("mcp__caw__"))).toEqual([]);
     const mcp = (s.permissions.allow as string[]).filter((a) => a.startsWith("mcp__"));
     expect(mcp).toEqual([
       "mcp__caw__card_context", "mcp__caw__comment", "mcp__caw__hand_off", "mcp__caw__set_status", "mcp__caw__ask_operator",
@@ -41,27 +44,29 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
     expect((s.permissions.allow as string[]).some((a) => a === "mcp__caw" || a.endsWith("__*"))).toBe(false); // named tools, not the whole server
   });
 
-  test("none of the forbidden allows: no git writes, no network tool, no generic interpreter (R-4)", () => {
+  // was: "none of the forbidden allows: no git writes, no network tool, no generic interpreter (R-4)" and `expect(allow.some(a => a === "Bash")).toBe(false)`. The per-command list is gone with the decision above;
+  // what must still hold: no per-command entry slipped back, no MCP wildcard.
+  test("no per-command Bash entry and no wildcard are in the allow list (the one `Bash` is deliberate; a second spelling would be a mistake)", () => {
     const allow: string[] = s.permissions.allow;
-    const bad = [/git (add|commit|branch|checkout|worktree|push|tag|reset|clean)/, /\b(curl|wget|nc|ssh|scp)\b/, /^Bash\((node|python3?|bun|bunx|sh|bash|zsh|perl|ruby|deno|npx) \*\)$/];
-    for (const a of allow) for (const re of bad) expect(re.test(a)).toBe(false);
-    expect(allow.some((a) => a === "Bash" || a === "Bash(*)")).toBe(false);
+    expect(allow.filter((a) => /^Bash\(/.test(a))).toEqual([]);
+    expect(allow.some((a) => a === "Bash(*)" || a === "*" || a === "mcp__*")).toBe(false);
   });
 
-  test("`find` is gone from the allow list (`find . -exec …` runs anything) and its dangerous forms are denied, as is `git diff --output` (an arbitrary file write)", () => {
-    expect((s.permissions.allow as string[]).some((a) => a.startsWith("Bash(find"))).toBe(false);
-    for (const d of ["Bash(find * -exec*)", "Bash(find * -execdir*)", "Bash(git diff --output*)"]) expect(s.permissions.deny).toContain(d);
+  test("the dangerous forms are DENIED, and a deny beats the wide allow: `find … -exec`, `git diff --output` (an arbitrary file write), and the programs that only ever reach out (nc ssh scp)", () => {
+    for (const d of ["Bash(find * -exec*)", "Bash(find * -execdir*)", "Bash(git diff --output*)", "Bash(nc *)", "Bash(ssh *)", "Bash(scp *)"]) expect(s.permissions.deny).toContain(d);
   });
 
-  test("network tools are also DENIED, so a broad allow added later cannot open them", () => {
-    for (const t of ["curl", "wget", "nc", "ssh", "scp"]) expect(s.permissions.deny).toContain(`Bash(${t} *)`);
+  // was: "network tools are also DENIED" for curl, wget, nc, ssh, scp. curl and wget are NOT denied any more: the hook lets them talk to 127.0.0.1 only, and a deny would beat that.
+  test("curl and wget are not denied (the hook allows 127.0.0.1 only); nc ssh scp are", () => {
+    for (const t of ["curl", "wget"]) expect(s.permissions.deny).not.toContain(`Bash(${t} *)`);
+    for (const t of ["nc", "ssh", "scp"]) expect(s.permissions.deny).toContain(`Bash(${t} *)`);
   });
 
   // was: "the Bash sandbox is on, cannot be switched off by the model, and has no network domain allowed (R-4)". TASK-112 (owner 13:41 and 14:03): no sandbox key at all.
   test("there is NO `sandbox` key: the Bash sandbox is not used (it needs socat/bubblewrap); the network tools stay denied by name instead", () => {
     expect("sandbox" in s).toBe(false);
     expect(JSON.stringify(s)).not.toContain("sandbox");
-    for (const t of ["curl", "wget", "nc", "ssh", "scp"]) expect(s.permissions.deny).toContain(`Bash(${t} *)`);
+    for (const t of ["nc", "ssh", "scp"]) expect(s.permissions.deny).toContain(`Bash(${t} *)`); // was: curl, wget, nc, ssh, scp (TASK-118)
   });
 
   test("the three built-in plugins every hop loaded are switched OFF (R-5; TASK-C-035 item 2 (i))", () => {
@@ -74,7 +79,7 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
     expect(Object.keys(rest).sort()).toEqual(["allow", "deny"]);
     expect(rest.allow).toEqual([...WORKER_ALLOW]);
     expect(rest.deny).toEqual([
-      "Bash(curl *)", "Bash(wget *)", "Bash(nc *)", "Bash(ssh *)", "Bash(scp *)",
+      "Bash(nc *)", "Bash(ssh *)", "Bash(scp *)", // was: curl and wget first (TASK-118: the hook allows them to 127.0.0.1 only)
       "Bash(find * -exec*)", "Bash(find * -execdir*)", "Bash(git diff --output*)",
     ]);
     expect(Object.keys(s).sort()).toEqual(["enabledPlugins", "env", "hooks", "permissions"]); // was with "sandbox" (TASK-112)
@@ -184,6 +189,15 @@ describe("withReadGuard — the read fence of every hop (TASK-C-042 Part A, UP-3
     expect(s.hooks.PreToolUse.some((h: any) => h.matcher === "Read|Glob|Grep|Bash")).toBe(true);
     expect("sandbox" in s).toBe(false);
     expect(JSON.stringify(base)).toBe(before);
+  });
+  test("the read-only folders are the hook's optional 2nd argument (JSON), added only when there are some — with none the one-argument command is byte-for-byte as before (TASK-118)", () => {
+    const hookCmd = (s: any): string => s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep|Bash").hooks[0].command;
+    const none = hookCmd(withReadGuard(base, readable));
+    expect(hookCmd(withReadGuard(base, readable, []))).toBe(none);
+    expect(none.endsWith(`'${JSON.stringify(readable)}'`)).toBe(true);
+    const some = hookCmd(withReadGuard(base, readable, ["/work/spec", "/my ro/dir"]));
+    expect(some).toBe(`${none} '${JSON.stringify(["/work/spec", "/my ro/dir"])}'`);
+    expect(some).not.toContain("$");
   });
   test("a readable folder with a space is single-quoted as part of the JSON argument", () => {
     const s: any = withReadGuard(base, ["/my work/app"]);

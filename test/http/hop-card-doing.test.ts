@@ -15,7 +15,8 @@ async function world() {
   return { ...s, ...chain, P, card, getCard, startHop };
 }
 
-test("a hop on a todo card puts it in doing right away, with updatedAt = the hop's start; the hop ending leaves it in doing", async () => {
+// was: "…; the hop ending leaves it in doing" (expect(...).toBe("doing") after the PATCH). TASK-119 / SPEC-108 D6: a finished hop sends a card still in `doing` back to `todo`.
+test("a hop on a todo card puts it in doing right away, with updatedAt = the hop's start; the hop ending (any outcome) sends it back to todo", async () => {
   const w = await world();
   const c = await w.card(w.a.id);
   expect(c.status).toBe("todo");
@@ -24,8 +25,11 @@ test("a hop on a todo card puts it in doing right away, with updatedAt = the hop
   const after = await w.getCard(c.id);
   expect(after.status).toBe("doing");
   expect(after.updatedAt).toBe(hop.json.startedAt); // the same event: no extra one
-  await w.call("PATCH", `/v1/hops/${hop.json.id}`, { outcome: "commented" });
-  expect((await w.getCard(c.id)).status).toBe("doing"); // stays where the worker's own writes put it
+  const done = await w.call("PATCH", `/v1/hops/${hop.json.id}`, { outcome: "commented" });
+  expect([done.status, done.json.outcome]).toEqual([200, "commented"]); // patchHop still answers with the hop
+  const back = await w.getCard(c.id);
+  expect(back.status).toBe("todo"); // a card is never left doing without a hop
+  expect(Date.parse(back.updatedAt)).toBeGreaterThanOrEqual(Date.parse(after.updatedAt));
 });
 
 test("a hop on a card already in doing leaves it doing and does not move updatedAt; another card is untouched", async () => {
@@ -61,12 +65,14 @@ test("a chat hop touches no card", async () => {
   expect([after.status, after.updatedAt]).toEqual(["todo", card.updatedAt]);
 });
 
-test("rebuild-check is same:true after hops on todo and doing cards, with the card moved by the reducer", async () => {
+test("rebuild-check is same:true after hops on todo and doing cards, with the card moved by the reducer AND moved back by a finished hop (TASK-119)", async () => {
   const w = await world();
   const c = await w.card(w.a.id);
   const hop = await w.startHop(c.id, w.a.id);
   expect((await w.call("POST", `${w.P}/rebuild-check`)).json).toEqual({ same: true });
-  await w.call("PATCH", `/v1/hops/${hop.json.id}`, { outcome: "commented" });
+  await w.call("PATCH", `/v1/hops/${hop.json.id}`, { outcome: "stopped", note: "หยุดไว้" });
+  expect((await w.getCard(c.id)).status).toBe("todo"); // the finished hop moved it back
+  expect((await w.db.select().from(events).where(eq(events.type, "card.status_set"))).length).toBe(1); // one plain event, replayed by a rebuild
   expect((await w.call("POST", `${w.P}/rebuild-check`)).json).toEqual({ same: true });
 });
 

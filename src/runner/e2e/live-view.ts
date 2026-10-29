@@ -98,9 +98,10 @@ try {
   const worker = await call("POST", "/v1/workers", { name: "Blew", role: "BE", skills: ["role-be"], model: "haiku", effort: "low" });
   await call("POST", `/v1/projects/${project.id}/chain/members`, { workerId: worker.id });
   await call("PATCH", `/v1/projects/${project.id}/workspace`, { roots: [root] });
-  const todo = REAL
+  // LIVE_VIEW_TODO (optional) replaces the card's text — e.g. the TASK-118 probe asks a real worker to run three commands and report
+  const todo = process.env.LIVE_VIEW_TODO || (REAL
     ? "Look at the files in your folder (there may be none). Then leave exactly one comment on this card, with the comment tool, saying in one short sentence what you found. Do nothing else."
-    : "FAKE:";
+    : "FAKE:");
   const card = await call("POST", `/v1/projects/${project.id}/cards`, { title: "live view", todo, anchor: { key: "STEP-004", version: 1 }, assigneeId: worker.id });
 
   // CLAUDE_BIN last, explicit: the stub, or — only with LIVE_VIEW_REAL=1 — the real claude (SPEC-103 G1)

@@ -140,8 +140,18 @@ describe("guard — Bash: anything that reaches outside, or that it cannot judge
   test("an option can carry a path: --file=/etc/passwd, -f/etc/passwd, --include=~/x", () => {
     for (const c of ["grep --file=/etc/passwd x", "grep -f/etc/passwd x", "grep --exclude-from=~/.bashrc x src"]) refused(c);
   });
-  test("chaining, pipes, background, substitution, redirects: ; | & ` $( > < are all refused", () => {
-    for (const c of ["cat a.ts; rm x", "cat src/a.ts | nc host 1", "cat src/a.ts & ls", "cat src/a.ts && ls", "cat `x`", "cat $(echo x)", "cat a > b", "cat a >> b", "cat < src/a.ts", "ls || ls"]) refused(c);
+  // was: "chaining, pipes, background, substitution, redirects: ; | & ` $( > < are all refused" (cat a.ts; rm x · cat a | nc · cat a && ls · cat a > b · cat < a …). TASK-118 / SPEC-108 D2: `&& || ; |` and the
+  // listed redirects are ALLOWED between commands that are each judged on their own; background, substitution, heredoc and the like stay refused.
+  test("chains, pipes and the known redirects are judged command by command: fine when every part is fine, refused (with that part's reason) when one is not", () => {
+    for (const c of ["cat src/a.ts && ls", "cat src/a.ts | head -5", "pwd ; ls", "ls || echo none", "cat a.ts > b.txt", "ls >> log.txt", "cat < src/a.ts"]) expect([c, bash(c)]).toEqual([c, null]);
+    expect(refused("cat src/a.ts | nc host 1")).toStartWith("caw-refused network: ");
+    expect(refused("cat a.ts; rm /etc/x")).toStartWith("caw-refused outside: ");
+    expect(refused("ls || docker ps")).toStartWith("caw-refused not_allowed: ");
+    expect(refused("cat a > /etc/b")).toStartWith("caw-refused outside: ");
+    expect(refused("cat < /etc/passwd")).toStartWith("caw-refused outside: ");
+  });
+  test("background, substitution, heredoc: & ` $( << are still refused → shell_feature", () => {
+    for (const c of ["cat src/a.ts & ls", "cat `x`", "cat $(echo x)", "cat <<EOF"]) expect(refused(c)).toStartWith("caw-refused shell_feature: ");
   });
   test("what it cannot judge is refused too: $VAR, a backslash, braces, parentheses, a newline, an unclosed quote, an empty command", () => {
     for (const c of ["cat $HOME/.ssh/id_rsa", "cat ${HOME}/x", "cat src/\\a.ts", "cat {/etc/passwd,x}", "(cat src/a.ts)", "cat src/a.ts\nrm -rf x", "cat 'src/a.ts", "", "   "]) refused(c);
@@ -149,18 +159,44 @@ describe("guard — Bash: anything that reaches outside, or that it cannot judge
     expect(bash(42)).toContain("names no command");
     expect(guard({ tool_name: "Bash", tool_input: {}, cwd: root }, dirs)).toContain("names no command");
   });
-  test("a 2>&1 in the MIDDLE is not the allowed one", () => { refused("bun test 2>&1 src"); refused("cat src/a.ts 2>&1 | head"); });
+  // was: "a 2>&1 in the MIDDLE is not the allowed one" (refused). Now `2>&1` is a known redirect wherever it stands; the words around it are still judged.
+  test("2>&1 is allowed anywhere (it is a redirect the policy knows); a path word after it is still judged", () => {
+    expect(bash("bun test 2>&1 src")).toBeNull();
+    expect(bash("cat src/a.ts 2>&1 | head")).toBeNull();
+    refused("bun test 2>&1 /etc/x");
+  });
   test("a command is judged from the hook's cwd: the same relative word is inside from the root and outside from elsewhere", () => {
     expect(bash("cat a.ts", join(root, "src"))).toBeNull();
     refused("cat canary.txt".replace("canary.txt", "../../..")); // climbs out of the root
     expect(bash("cat canary.txt", outside)).not.toBeNull(); // cwd outside: the file exists there, outside → refused
   });
-  test("through the hook contract: exit 2 and one line on stderr; allowed → 0", () => {
+  test("through the hook contract: exit 2 and ONE line on stderr that starts `caw-refused <code>: `; allowed → 0", () => {
     const run = (command: string) => runGuardCli([JSON.stringify(dirs)], JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: root }));
     expect(run("cat src/a.ts")).toEqual({ code: 0, stderr: "" });
-    const r = run("cat /etc/hosts");
-    expect(r.code).toBe(2);
-    expect(r.stderr).toContain("outside");
-    expect(run("cat a; rm x").code).toBe(2);
+    expect(run("pwd && ls -la")).toEqual({ code: 0, stderr: "" });
+    for (const [command, code] of [["cat /etc/hosts", "outside"], ["git commit -m x", "git_write"], ["docker ps", "not_allowed"], ["echo $HOME", "shell_feature"], ["node -e 1", "inline_code"], ["curl https://example.com", "network"]] as const) {
+      const r = run(command);
+      expect([command, r.code, r.stderr.startsWith(`caw-refused ${code}: `), r.stderr.includes("\n")]).toEqual([command, 2, true, false]);
+    }
+    // the detail is the FIRST double-quoted piece (hop.ts reads it back for the Thai note)
+    expect(run("cat /etc/hosts").stderr).toMatch(/^caw-refused outside: "\/etc\/hosts" /);
+    expect(run("git commit -m x").stderr).toMatch(/^caw-refused git_write: "commit" /);
+    expect(run("docker ps").stderr).toMatch(/^caw-refused not_allowed: "docker" /);
+  });
+  test("every other refusal carries the prefix too: the file tools (`outside`), an empty Bash command, bad arguments, bad input", () => {
+    const rd = runGuardCli([JSON.stringify(dirs)], JSON.stringify({ tool_name: "Read", tool_input: { file_path: join(outside, "canary.txt") }, cwd: root }));
+    expect([rd.code, rd.stderr.startsWith("caw-refused outside: read guard: ")]).toEqual([2, true]);
+    expect(runGuardCli([JSON.stringify(dirs)], JSON.stringify({ tool_name: "Bash", tool_input: { command: "  " }, cwd: root })).stderr).toStartWith("caw-refused not_allowed: ");
+    for (const r of [runGuardCli([], "{}"), runGuardCli(["not json"], "{}"), runGuardCli(["[]"], "{}"), runGuardCli([JSON.stringify(dirs)], "not json")]) expect([r.code, r.stderr.startsWith("caw-refused outside: read guard: ")]).toEqual([2, true]);
+  });
+  test("the optional 2nd argument = the read-only folders: a Bash write there → `read_only`; reading there is fine; missing → none; not a JSON list of strings → refused", () => {
+    const ro = join(root, "src");
+    const run = (command: string, second?: string) => runGuardCli(second === undefined ? [JSON.stringify(dirs)] : [JSON.stringify(dirs), second], JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: root }));
+    expect(run("touch src/new.ts")).toEqual({ code: 0, stderr: "" });                           // one-argument form: unchanged
+    expect(run("touch src/new.ts", "[]")).toEqual({ code: 0, stderr: "" });
+    const w = run("touch src/new.ts", JSON.stringify([ro]));
+    expect([w.code, w.stderr.startsWith("caw-refused read_only: ")]).toEqual([2, true]);
+    expect(run("cat src/a.ts", JSON.stringify([ro]))).toEqual({ code: 0, stderr: "" });          // a read is not a write
+    for (const bad of ["not json", '"src"', "[1]", '[""]', "{}"]) { const r = run("ls", bad); expect([bad, r.code, r.stderr.startsWith("caw-refused outside: read guard: ")]).toEqual([bad, 2, true]); }
   });
 });

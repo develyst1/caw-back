@@ -18,7 +18,9 @@ export const CardSchema = z.object({
   status: Status, assigneeId: z.string().nullable(), anchor: z.object({ key: z.string(), version: z.number().int() }),
   specChangedVersion: z.number().int().nullable(), dependsOn: z.array(z.string()),
   question: z.object({ text: z.string(), proposedDefault: z.string(), cases: z.array(z.string()) }).nullable(), answer: z.string().nullable(),
-  workable: z.boolean(), createdAt: z.string(), updatedAt: z.string(),
+  workable: z.boolean(),
+  stoppedMidway: z.object({ hopId: z.string(), at: z.string(), reason: z.string() }).nullable().openapi({ description: "a card back in `todo` after a hop that failed, was stopped or was interrupted: that hop, when it ended, and the leading sentence of its note; null otherwise (SPEC-108 D7)" }),
+  createdAt: z.string(), updatedAt: z.string(),
 }).openapi("Card");
 const NoteSchema = z.object({
   id: z.string(), type: z.enum(["comment", "handoff", "handoff_refused"]), actor: z.string(), text: z.string(),

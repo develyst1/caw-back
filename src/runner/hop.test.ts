@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { chainOf3, newCard, setup } from "../../test/helpers/api";
 import { RunnerApiError, createApi } from "./api";
 import { HOOKS } from "./config";
-import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, folderOutsideWorkspace, runHop } from "./hop";
+import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, folderOutsideWorkspace, refusalOf, refusedNote, runHop } from "./hop";
 import { type Procs, readHopFile } from "./procs";
 import { fakeChild, fixture, hopAware, limitFixture } from "./testkit";
 import { formatReset } from "./thai";
@@ -17,6 +17,28 @@ const tmp = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix));
 afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 const WS = tmp("caw-hop-ws-");
 const inWs = (prefix: string) => mkdtempSync(join(WS, prefix)); // removed with WS in afterAll
+
+// ---- refusals as claude prints them (SPEC-108 D3/D4): a Bash tool_use, then an is_error tool_result with the hook's text; or a `permission_denied` system line ----
+const toolUse = (id: string, name: string, input: object) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } });
+/** a hook refusal: `hook` is the script that printed it (our read-guard.ts, or a workspace guard such as block-irreversible.sh) */
+const hookRefusal = (n: number, command: string, stderr: string, hook = "read-guard.ts"): string[] => [
+  toolUse(`toolu_r${n}`, "Bash", { command }),
+  JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: `toolu_r${n}`, is_error: true, content: `PreToolUse:Bash hook error: [/x/${hook} '["/r"]']: ${stderr}` }] } }),
+];
+const gitWrite = (n: number) => hookRefusal(n, "git commit -m x", 'caw-refused git_write: "commit" is not allowed — a worker reads git (status, log, diff, show, ls-files, blame, rev-parse) and never writes it');
+const notAllowed = (n: number, prog = "docker") => hookRefusal(n, `${prog} ps`, `caw-refused not_allowed: "${prog}" is not a command a worker may run here — use bun, node, git (read) or file commands`);
+const networkRefusal = (n: number, url = "https://example.com") => hookRefusal(n, `curl ${url}`, `caw-refused network: "${url}" reaches the network — only 127.0.0.1, localhost and [::1] are allowed`);
+const outsideRefusal = (n: number, path = "/etc/hosts") => hookRefusal(n, `cat ${path}`, `caw-refused outside: "${path}" is outside the project's folders — a worker reads only inside them`);
+const guardRefusal = (n: number) => hookRefusal(n, "git push origin HEAD", "Blocked by the overnight guard (git push)", "block-irreversible.sh");
+const permissionDeny = (n: number, tool = "WebFetch") => [
+  toolUse(`toolu_p${n}`, tool, { url: "https://example.com" }),
+  JSON.stringify({ type: "system", subtype: "permission_denied", tool_name: tool, tool_use_id: `toolu_p${n}`, message: "Claude requested permissions to use a tool, but you haven't granted it yet." }),
+];
+/** ten distinct refusals: the cap */
+const tenRefusals = (): string[] => [gitWrite(0), notAllowed(1), networkRefusal(2), outsideRefusal(3), guardRefusal(4), permissionDeny(5), notAllowed(6, "make"), outsideRefusal(7, "/etc/passwd"), networkRefusal(8, "https://a.test"), gitWrite(9)].flat();
+const SENTENCE = (reason: string) => `คำสั่งนี้ทำไม่ได้: ${reason} — ทำต่อด้วยวิธีอื่น`;
+/** what the worker does through MCP in a real hop: one comment on its card */
+const commentBy = (w: { call: (m: string, p: string, b?: unknown, a?: string | null) => Promise<any>; card: { id: string }; actor: string }) => async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); };
 mkdirSync(join(WS, ".claude/skills/role-be"), { recursive: true });
 writeFileSync(join(WS, ".claude/skills/role-be/SKILL.md"), "BE craft");
 
@@ -138,27 +160,29 @@ describe("runHop — refusals and stops (the child is never started for a refusa
     expect(w.spawned).toHaveLength(0);
   });
 
-  test("a hook block in the stream ends the child at once and the hop is stopped with the worker and the action", async () => {
+  // was: "a hook block in the stream ends the child at once and the hop is stopped with the worker and the action" (TASK-118 / SPEC-108 D4: no refusal ends a hop)
+  test("a hook block in the stream does NOT end the hop: the recorded git push block, then the worker's comment → commented, the note says why in the PM's sentence, the child is not killed", async () => {
     const w = await world();
-    const child = fakeChild({ lines: fixture("push-absolute-hooks").slice(0, -1), hang: true }); // the stream never reaches its result: the runner must not wait for it
-    w.set(() => child);
+    let child!: ReturnType<typeof fakeChild>;
+    w.set(() => (child = fakeChild({ lines: fixture("push-absolute-hooks"), before: commentBy(w) })));
     await runHop(w.deps, await w.input());
     const h = await w.finished();
-    expect(child.killed).toBe(true);
-    expect(h.outcome).toBe("stopped");
-    expect(h.note).toBe("หยุดไว้: Blew พยายาม Bash: git push origin HEAD ซึ่งไม่อนุญาต · tools: Bash ×1 · turns 1");
-    // the exact block text goes to the runner's log, so an operator can see WHAT stopped it (the note is the short Thai form)
-    expect(w.log.join("\n")).toContain("hook block: PreToolUse:Bash hook error:");
+    expect(child.killed).toBe(false);
+    expect([h.outcome, h.note]).toEqual(["commented", SENTENCE("กฎความปลอดภัยกันไว้")]); // a workspace guard hook (no caw-refused prefix) → `guard`
+    // the runner's log says WHAT was refused, once, with its count
+    expect(w.log.filter((l) => l.includes("refused 1 of 10") && l.includes("guard"))).toHaveLength(1);
   });
 
-  test("a permission denial ends it the same way", async () => {
+  // was: "a permission denial ends it the same way"
+  test("a permission denial does not end it either: recorded as `tool`, the note names the tool", async () => {
     const w = await world();
-    const child = fakeChild({ lines: fixture("write-outside").slice(0, -1), hang: true });
-    w.set(() => child);
+    let child!: ReturnType<typeof fakeChild>;
+    w.set(() => (child = fakeChild({ lines: fixture("write-outside"), before: commentBy(w) })));
     await runHop(w.deps, await w.input());
     const h = await w.finished();
-    expect(child.killed).toBe(true);
-    expect([h.outcome, h.note.startsWith("หยุดไว้: Blew พยายาม Bash: mkdir -p ")]).toEqual(["stopped", true]);
+    expect(child.killed).toBe(false);
+    expect(h.outcome).toBe("commented");
+    expect(h.note).toContain(SENTENCE("เครื่องมือ Bash ใช้ในก้าวนี้ไม่ได้"));
   });
 
   test("a child that outlives RUNNER_HOP_MAX_MS is killed → stopped, timeout note", async () => {
@@ -309,19 +333,17 @@ describe("runHop — the exit code, and secrets (Sector's review)", () => {
     await runHop(w.deps, await w.input());
     expect((await w.finished()).note).toBe("");
   });
-  test("a blocked command that carries a secret: the stored note and the log show it redacted", async () => {
+  // was: a block-irreversible hook line carrying the command, hang → stopped, note "git push https://***@… token=***". Now the secret can only reach the note through the refusal's DETAIL
+  // (the program / path / URL the hook quoted), and the hop is not stopped by it — so the stream ends without a result and the hop FAILS with the refusal sentence in its note.
+  test("a refusal whose detail carries a secret: the stored note and the log show it redacted", async () => {
     const w = await world();
-    const cmd = "git push https://bob:s3cret@example.invalid/r.git token=abc999";
-    const lines = [
-      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: cmd } }] } }),
-      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: `PreToolUse:Bash hook error: [/x/block-irreversible.sh]: Blocked (git push) ${cmd}` }] } }),
-    ];
-    w.set(() => fakeChild({ lines, hang: true }));
+    const secretUrl = "https://bob:s3cret@example.invalid/r.git?token=abc999";
+    w.set(() => fakeChild({ lines: notAllowed(1, secretUrl) }));
     await runHop(w.deps, await w.input());
     const h = await w.finished();
-    expect(h.outcome).toBe("stopped");
+    expect(h.outcome).toBe("failed");
     for (const text of [h.note, w.log.join("\n")]) { expect(text).not.toContain("s3cret"); expect(text).not.toContain("abc999"); }
-    expect(h.note).toContain("git push https://***@example.invalid/r.git token=***");
+    expect(h.note).toContain("https://***@example.invalid/r.git?token=*** ไม่ใช่คำสั่งที่ worker ใช้ได้");
   });
   test("a runner fault's text is redacted too", async () => {
     const w = await world();
@@ -383,7 +405,7 @@ describe("the hop file and the process group (TASK-C-035, DEF-1)", () => {
   });
   test("the file is removed also when the hop ends stopped or failed", async () => {
     const { w, hopsDir } = await withDir();
-    w.set(() => fakeChild({ pid: 4321, lines: fixture("push-absolute-hooks").slice(0, 15), hang: true }));
+    w.set(() => fakeChild({ pid: 4321, lines: tenRefusals(), hang: true })); // was: one git-push hook block stopped it; now it takes the 10th refusal (SPEC-108 D4)
     await runHop(w.deps, await w.input());
     expect((await w.finished()).outcome).toBe("stopped");
     expect(readHopFile(hopsDir, (await w.finished()).id, () => {})).toBeNull();
@@ -707,10 +729,10 @@ describe("the per-hop trace and the tool summary (TASK-C-036)", () => {
     expect(text).not.toContain("hunter2");
     expect(w.log.some((l) => l.includes(`trace ${join(traceDir, `${w.hop.id}.jsonl`)}`))).toBe(true);
   });
-  test("a hop that is stopped (killed on a block) still leaves its trace", async () => {
+  test("a hop that is stopped (killed on the 10th refusal) still leaves its trace", async () => {
     const w = await world();
     const traceDir = tmp("caw-trace-");
-    w.set(() => fakeChild({ lines: fixture("push-absolute-hooks").slice(0, -1), hang: true }));
+    w.set(() => fakeChild({ lines: tenRefusals(), hang: true })); // was: one hook block
     await runHop({ ...w.deps, traceDir }, await w.input());
     expect((await w.finished()).outcome).toBe("stopped");
     expect(existsSync(join(traceDir, `${w.hop.id}.jsonl`))).toBe(true);
@@ -803,10 +825,10 @@ describe("the hop heartbeat (TASK-C-038, contract v1.11, D-066)", () => {
     h.s.end(); await h.running;
     expect(h.calls).toEqual([31, 150]);
   });
-  test("none after the stream has stopped: the hook-block line ends the reading, the child is killed, and no heartbeat follows it", async () => {
+  test("none after the stream has stopped: the 10th refusal ends the reading, the child is killed, and no heartbeat follows it", async () => {
     const h = await setupHb(ok);
     await h.at(31);                                                      // one heartbeat
-    for (const l of fixture("push-absolute-hooks").slice(0, 15)) { try { await h.s.push(l); } catch { break; } } // reaches the block → the stream is stopped
+    for (const l of tenRefusals()) { try { await h.s.push(l); } catch { break; } } // reaches the 10th refusal → the stream is stopped (was: one hook block)
     await h.running;
     expect((await h.w.finished()).outcome).toBe("stopped");
     expect(h.calls).toEqual([31]);
@@ -949,104 +971,124 @@ describe("the read fence of every hop (TASK-C-042 Part A, UP-3: client data must
   });
 });
 
-describe("read-guard refusals are SOFT, counted, and the 3rd stops the hop (TASK-C-042 Q2, Sector 2026-10-20)", () => {
-  /** the recorded pair from the real run (fixtures/read-guard.stream.jsonl: a Read of a home canary and the hook's refusal), with a fresh tool_use id each time */
-  const refusal = (n: number): string[] => fixture("read-guard").map((l) => l.split("toolu_01WS8m3xoZw3QUN4sHqrfiwB").join(`toolu_refused_${n}`));
-  const refusals = (k: number) => Array.from({ length: k }, (_, i) => refusal(i)).flat();
-  const WORDS = (n: number) => `อ่านนอกโฟลเดอร์ถูกปฏิเสธ ${n} ครั้ง`;
-  const comment = (w: Awaited<ReturnType<typeof world>>) => async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); };
-
-  test("the recorded line is a hook block that names read-guard (the fixture is what the real claude printed)", () => {
-    expect(fixture("read-guard").join("\n")).toContain("PreToolUse:Read hook error");
-    expect(fixture("read-guard").join("\n")).toContain("read-guard");
-  });
-  test("1 refusal: the hop goes on and ends normally, with the count in its note; the child is not killed", async () => {
+// was: describe("read-guard refusals are SOFT, counted, and the 3rd stops the hop (TASK-C-042 Q2, Sector 2026-10-20)") — pinned "the 3rd read-guard refusal stops it" and "a git-push block
+// stops at once". TASK-118 / SPEC-108 D4: NO refusal ends a hop (our hook, a workspace guard hook, a permission deny); the 10th one in a hop does. The note names the real reasons.
+describe("refusals never end a hop; the 10th one does; the note names the real reasons (TASK-118, SPEC-108 D4/D5)", () => {
+  const run = async (lines: string[], opts: { comment?: boolean; hang?: boolean } = {}) => {
     const w = await world();
     let child!: ReturnType<typeof fakeChild>;
-    w.set(() => (child = fakeChild({ lines: [...refusals(1), ...fixture("ok")], before: comment(w) }))); // built when claude is spawned: its comment must come after the hop's start
+    w.set(() => (child = fakeChild({ lines, hang: opts.hang, before: opts.comment === false ? undefined : commentBy(w) })));
     await runHop(w.deps, await w.input());
-    const h = await w.finished();
-    expect([h.outcome, h.note]).toEqual(["commented", WORDS(1)]);
+    return { w, child, h: await w.finished() };
+  };
+
+  test("two refusals of DIFFERENT codes → the hop goes on and ends `commented`; the note has both Thai sentences; the child is not killed", async () => {
+    const { child, h, w } = await run([...gitWrite(1), ...notAllowed(2), ...fixture("ok")]);
     expect(child.killed).toBe(false);
-    expect(w.log.some((l) => l.includes("read-guard") && l.includes("refused"))).toBe(true);
+    expect(h.outcome).toBe("commented");
+    expect(h.note).toBe([SENTENCE("worker เขียน git ไม่ได้"), SENTENCE("docker ไม่ใช่คำสั่งที่ worker ใช้ได้")].join(" · "));
+    expect(w.log.some((l) => l.includes("refused 1 of 10") && l.includes("git_write"))).toBe(true);
+    expect(w.log.some((l) => l.includes("refused 2 of 10") && l.includes("not_allowed docker"))).toBe(true);
   });
-  test("2 refusals: still goes on, note says 2", async () => {
-    const w = await world();
-    w.set(() => fakeChild({ lines: [...refusals(2), ...fixture("ok")], before: comment(w) }));
-    await runHop(w.deps, await w.input());
-    const h = await w.finished();
-    expect([h.outcome, h.note]).toEqual(["commented", WORDS(2)]);
+
+  test("every code has its sentence: outside · read_only · not_allowed · shell_feature · git_write · network · inline_code · guard · tool", async () => {
+    const one = async (lines: string[]) => (await run([...lines, ...fixture("ok")])).h.note;
+    expect(await one(outsideRefusal(1, "/etc/hosts"))).toBe(SENTENCE("/etc/hosts อยู่นอกโฟลเดอร์งาน"));
+    expect(await one(hookRefusal(1, "rm x", 'caw-refused read_only: "/ws/spec/x" is in a read-only folder — a worker cannot write there'))).toBe(SENTENCE("โฟลเดอร์ /ws/spec/x อ่านได้อย่างเดียว"));
+    expect(await one(notAllowed(1, "docker"))).toBe(SENTENCE("docker ไม่ใช่คำสั่งที่ worker ใช้ได้"));
+    expect(await one(hookRefusal(1, "echo $HOME", 'caw-refused shell_feature: "$" cannot be used in a command here — run plain commands'))).toBe(SENTENCE("ใช้ $ ในคำสั่งไม่ได้"));
+    expect(await one(gitWrite(1))).toBe(SENTENCE("worker เขียน git ไม่ได้"));
+    expect(await one(networkRefusal(1))).toBe(SENTENCE("ออกเน็ตได้แค่ 127.0.0.1 กับที่ลงแพ็กเกจ"));
+    expect(await one(hookRefusal(1, "bun -e 1", 'caw-refused inline_code: "-e" runs code from the command line — write the code to a file first'))).toBe(SENTENCE("รันโค้ดจากบรรทัดคำสั่งไม่ได้ — เขียนเป็นไฟล์ก่อน"));
+    expect(await one(guardRefusal(1))).toBe(SENTENCE("กฎความปลอดภัยกันไว้"));
+    expect(await one(permissionDeny(1, "WebFetch"))).toBe(SENTENCE("เครื่องมือ WebFetch ใช้ในก้าวนี้ไม่ได้"));
   });
-  test("the 3rd refusal in one hop stops it with today's blocked note, naming what the worker tried", async () => {
-    const w = await world();
-    const child = fakeChild({ lines: [...refusals(3), ...fixture("ok")], hang: true });
-    w.set(() => child);
-    await runHop(w.deps, await w.input());
-    const h = await w.finished();
-    expect(h.outcome).toBe("stopped");
-    expect(h.note.startsWith("หยุดไว้: Blew พยายาม Read")).toBe(true);
+
+  test("a file-tool refusal by the read guard (`caw-refused outside: read guard: <path> is outside …`, the path unquoted) → the path is named", async () => {
+    const lines = [toolUse("t1", "Read", { file_path: "/etc/hosts" }), JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true,
+      content: "PreToolUse:Read hook error: [/x/read-guard.ts '[\"/r\"]']: caw-refused outside: read guard: /etc/hosts is outside the project's folders — a worker reads only inside them" }] } })];
+    expect((await run([...lines, ...fixture("ok")])).h.note).toBe(SENTENCE("/etc/hosts อยู่นอกโฟลเดอร์งาน"));
+  });
+
+  test("the recorded old-format read-guard line (no `caw-refused` prefix, kept as history) is read as a workspace guard: soft, `กฎความปลอดภัยกันไว้`", async () => {
+    const { h, child } = await run([...fixture("read-guard"), ...fixture("ok")]);
+    expect(child.killed).toBe(false);
+    expect([h.outcome, h.note]).toEqual(["commented", SENTENCE("กฎความปลอดภัยกันไว้")]);
+  });
+
+  test("the same refusal many times is ONE sentence; at most 3 distinct sentences, then `(อีก n ครั้ง)` for the refusals those three do not cover", async () => {
+    // distinct: git_write(commit), docker, network(url), make, /etc/x   ·  repeats: git_write again → 6 refusals, 5 distinct, shown 3 → uncovered = make + /etc/x = 2
+    const lines = [gitWrite(1), notAllowed(2), networkRefusal(3), notAllowed(4, "make"), outsideRefusal(5, "/etc/x"), gitWrite(6)].flat();
+    const { h } = await run([...lines, ...fixture("ok")]);
+    expect(h.outcome).toBe("commented");
+    expect(h.note).toBe([SENTENCE("worker เขียน git ไม่ได้"), SENTENCE("docker ไม่ใช่คำสั่งที่ worker ใช้ได้"), SENTENCE("ออกเน็ตได้แค่ 127.0.0.1 กับที่ลงแพ็กเกจ"), "(อีก 2 ครั้ง)"].join(" · "));
+    const same = await run([...[1, 2, 3, 4].flatMap((n) => gitWrite(n)), ...fixture("ok")]);
+    expect(same.h.note).toBe(SENTENCE("worker เขียน git ไม่ได้")); // four times, one sentence, no `(อีก …)`
+  });
+
+  test("9 refusals are still fine: the hop goes on and ends commented", async () => {
+    const nine = tenRefusals().slice(0, tenRefusals().length - 2); // drop the 10th pair (a tool_use + its result)
+    const { h, child } = await run([...nine, ...fixture("ok")]);
+    expect(child.killed).toBe(false);
+    expect(h.outcome).toBe("commented");
+    expect(h.note).not.toContain("หยุดไว้");
+  });
+
+  test("the 10th refusal stops the hop: `stopped`, the cap note first, then the reasons, then the tools; the child is killed; the log says so", async () => {
+    const { h, child, w } = await run([...tenRefusals(), ...fixture("ok")], { hang: true, comment: false });
     expect(child.killed).toBe(true);
-  });
-  test("a git-push block still stops at once, even after a soft read-guard refusal (unchanged)", async () => {
-    const w = await world();
-    const child = fakeChild({ lines: [...refusals(1), ...fixture("push-absolute-hooks").slice(0, 15)], hang: true });
-    w.set(() => child);
-    await runHop(w.deps, await w.input());
-    const h = await w.finished();
     expect(h.outcome).toBe("stopped");
-    expect(h.note).toContain("git push");
-    expect(child.killed).toBe(true);
+    expect(h.note.startsWith("หยุดไว้: คำสั่งถูกปฏิเสธครบ 10 ครั้งในก้าวเดียว · ")).toBe(true);
+    expect(h.note).toContain(SENTENCE("worker เขียน git ไม่ได้"));
+    expect(h.note).toContain("(อีก ");
+    expect(w.log.some((l) => l.includes("refused 10 of 10"))).toBe(true);
+    expect(w.log.some((l) => l.includes("10 refusals in one hop — hop stopped"))).toBe(true);
   });
-  test("a hop that FAILS after soft refusals carries both: the refusal count and the tool summary", async () => {
-    const w = await world();
-    w.set(() => fakeChild({ lines: [...refusals(1), ...fixture("ok")] }));
-    await runHop(w.deps, await w.input());
-    const h = await w.finished();
+
+  test("the cap counts every kind together: our hook, a workspace guard hook and a permission deny", async () => {
+    const mixed = [gitWrite(0), guardRefusal(1), permissionDeny(2), gitWrite(3), guardRefusal(4), permissionDeny(5), gitWrite(6), guardRefusal(7), permissionDeny(8)].flat();
+    expect((await run([...mixed, ...fixture("ok")])).h.outcome).toBe("commented"); // 9
+    const ten = [...mixed, ...gitWrite(9)];
+    const { h, child } = await run([...ten, ...fixture("ok")], { hang: true, comment: false });
+    expect([h.outcome, child.killed]).toEqual(["stopped", true]);
+  });
+
+  test("a hop that FAILS after refusals carries all of it: the no-result sentence, the refusal sentences, the tool summary", async () => {
+    const { h } = await run([...gitWrite(1), ...fixture("ok")], { comment: false });
     expect(h.outcome).toBe("failed");
-    expect(h.note).toContain(NOTES.noResult);
-    expect(h.note).toContain(WORDS(1));
+    const parts = h.note.split(" · ");
+    expect(parts[0]).toBe(NOTES.noResult);
+    expect(parts).toContain(SENTENCE("worker เขียน git ไม่ได้"));
     expect(h.note).toContain("tools:");
   });
-  // TASK-112 (SA-decided): a refusal by OUR read guard on a Bash command is soft too, and shares the counter. The recorded pair, re-labelled as a Bash tool's refusal.
-  const bashRefusal = (n: number): string[] => refusal(n).map((l) => l.split("PreToolUse:Read hook error").join("PreToolUse:Bash hook error"));
-  const bashRefusals = (k: number) => Array.from({ length: k }, (_, i) => bashRefusal(i)).flat();
-  test("Bash: 1 and 2 refusals by read-guard → the hop goes on and ends normally, the note counts them, the child is not killed", async () => {
-    expect(bashRefusal(0).join("\n")).toContain("PreToolUse:Bash hook error");
-    expect(bashRefusal(0).join("\n")).toContain("read-guard");
-    for (const k of [1, 2]) {
-      const w = await world();
-      let child!: ReturnType<typeof fakeChild>;
-      w.set(() => (child = fakeChild({ lines: [...bashRefusals(k), ...fixture("ok")], before: comment(w) })));
-      await runHop(w.deps, await w.input());
-      const h = await w.finished();
-      expect([k, h.outcome, h.note]).toEqual([k, "commented", WORDS(k)]);
-      expect(child.killed).toBe(false);
-    }
+
+  test("a refusal is not an outcome: the card's result is still what the worker wrote (a comment → commented), with or without refusals", async () => {
+    const without = await run([...fixture("ok")]);
+    const withRefusal = await run([...gitWrite(1), ...fixture("ok")]);
+    expect([without.h.outcome, without.h.note]).toEqual(["commented", ""]);
+    expect(withRefusal.h.outcome).toBe("commented");
   });
-  test("Bash: the 3rd refusal stops the hop; Read and Bash refusals share ONE counter (Read, Bash, Bash → stopped)", async () => {
-    const w = await world();
-    const child = fakeChild({ lines: [...refusal(0), ...bashRefusal(1), ...bashRefusal(2), ...fixture("ok")], hang: true });
-    w.set(() => child);
-    await runHop(w.deps, await w.input());
-    const h = await w.finished();
-    expect(h.outcome).toBe("stopped");
-    expect(h.note.startsWith("หยุดไว้: Blew พยายาม")).toBe(true);
-    expect(child.killed).toBe(true);
-  });
-  test("Bash: a block by ANOTHER guard hook (its text does not name read-guard) still stops the hop at once", async () => {
-    const w = await world();
-    const other = bashRefusal(0).map((l) => l.split("read-guard").join("block-irreversible"));
-    const child = fakeChild({ lines: [...other, ...fixture("ok")], hang: true });
-    w.set(() => child);
-    await runHop(w.deps, await w.input());
-    expect((await w.finished()).outcome).toBe("stopped");
-    expect(child.killed).toBe(true);
-  });
+
   test("no refusal, no words in the note", async () => {
-    const w = await world();
-    w.set(() => fakeChild({ lines: fixture("ok"), before: comment(w) }));
-    await runHop(w.deps, await w.input());
-    expect((await w.finished()).note).toBe("");
+    const { h } = await run(fixture("ok"));
+    expect(h.note).toBe("");
+  });
+});
+
+describe("refusalOf and refusedNote on their own", () => {
+  test("refusalOf reads the code and the first quoted detail after `caw-refused <code>: ` — not the quotes in the hook's own command line", () => {
+    const text = (stderr: string) => `PreToolUse:Bash hook error: [/bun /x/read-guard.ts '["/a","/b"]']: ${stderr}`;
+    expect(refusalOf({ kind: "hook", tool: "Bash", text: text('caw-refused network: "https://example.com" reaches the network — "x"') })).toEqual({ kind: "network", detail: "https://example.com" });
+    expect(refusalOf({ kind: "hook", tool: "Bash", text: text("caw-refused outside: read guard: /etc/hosts is outside the project's folders — x") })).toEqual({ kind: "outside", detail: "/etc/hosts" });
+    expect(refusalOf({ kind: "hook", tool: "Bash", text: text('caw-refused git_write: "commit" is not allowed') })).toEqual({ kind: "git_write", detail: "commit" });
+    expect(refusalOf({ kind: "hook", tool: "Bash", text: text("Blocked by the overnight guard (git push)") })).toEqual({ kind: "guard", detail: "" });
+    expect(refusalOf({ kind: "hook", tool: "Read", text: "PreToolUse:Read hook error: [x]: read guard: /a is outside the project's folders" })).toEqual({ kind: "guard", detail: "" });
+    expect(refusalOf({ kind: "permission", tool: "WebSearch", text: "permission denied" })).toEqual({ kind: "tool", detail: "WebSearch" });
+    expect(refusalOf({ kind: "hook", tool: "Bash", text: text("caw-refused made_up_code: x") })).toEqual({ kind: "guard", detail: "" }); // an unknown code is not trusted
+  });
+  test("refusedNote: empty list → empty; redacts what it prints", () => {
+    expect(refusedNote([])).toBe("");
+    expect(refusedNote([{ kind: "not_allowed", detail: "token=abc999" }])).toBe(SENTENCE("token=*** ไม่ใช่คำสั่งที่ worker ใช้ได้"));
   });
 });
 

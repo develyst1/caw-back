@@ -3,7 +3,7 @@
 // dispatcher's stretch of work with its own hop budget. Any valid actor may write them (the runner is not a worker).
 import { eq } from "drizzle-orm";
 import { isWorkable } from "../cards/view";
-import type { Actor, HopOutcome, StopReason } from "../core/events";
+import type { Actor, CawEvent, HopOutcome, StopReason } from "../core/events";
 import { newId, now } from "../core/ids";
 import { rewritePaths } from "../core/paths";
 import type { HopState, RunState, State } from "../core/reduce";
@@ -78,7 +78,12 @@ export async function patchHop(db: Db, actor: Actor, hopId: string, patch: HopPa
       if (hop.claimedBy !== null) throw new ApiError(409, "already_claimed", "that hop is claimed by another runner");
       return { type: "hop.claimed", projectId, actor, at: now(), data: { hopId, claim: patch.claim } };
     }
-    return { type: "hop.finished", projectId, actor, at: now(), data: { hopId, outcome: patch.outcome, tokensIn: patch.tokensIn ?? null, tokensOut: patch.tokensOut ?? null, note: cleanText(actor, patch.note ?? "", s) } };
+    const at = now();
+    const finished: CawEvent = { type: "hop.finished", projectId, actor, at, data: { hopId, outcome: patch.outcome, tokensIn: patch.tokensIn ?? null, tokensOut: patch.tokensOut ?? null, note: cleanText(actor, patch.note ?? "", s) } };
+    // SPEC-108 D6 (REQ-111): a card is never left `doing` without a hop. A finished CARD hop whose card is still `doing` (the worker did not move it) sends it back to
+    // `todo` in the same write, whatever the outcome — a plain event, so a rebuild replays it. A worker that moved it (review / done / stuck) is left alone; a chat hop has no card.
+    const card = hop.cardId === null ? undefined : s.cards.find((c) => c.id === hop.cardId);
+    return card?.status === "doing" ? [finished, { type: "card.status_set", projectId, actor, at, data: { cardId: card.id, status: "todo" } }] : finished;
   });
   return hopIn(state);
 }

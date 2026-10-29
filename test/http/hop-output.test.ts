@@ -136,7 +136,7 @@ test("output is not an event: the events feed has no new type and rebuild-check 
   await w.post([w.entry(0), w.entry(1)]);
   await w.call("PATCH", `/v1/hops/${w.hop.id}`, { outcome: "commented" });
   const events = (await w.call("GET", `${w.P}/events`)).json.events as any[];
-  expect(events.length).toBe(before + 1); // only hop.finished
+  expect(events.length).toBe(before + 2); // hop.finished + the card's card.status_set back to todo (TASK-119, D6) — and nothing for the output
   expect(events.some((e) => /output/.test(e.type))).toBe(false);
   expect((await w.call("POST", `${w.P}/rebuild-check`)).json).toEqual({ same: true });
 });
