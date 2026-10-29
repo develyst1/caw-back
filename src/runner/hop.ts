@@ -1,13 +1,14 @@
 // Run ONE hop: one turn of one worker on one card, as a headless `claude -p` child (SPEC-C-003 § 2–3).
 // The hop row already exists (started by the screen or by the runner's restart rule); this finishes it, whatever happens.
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutcome, type Project, type Worker, RunnerApiError, readOnlyOf } from "./api";
 import type { RunnerConfig } from "./config";
 import { type Thread, buildChatPrompt, buildPrompt, folderNames, loadSkills, threadOf, writeSkillsFile } from "./prompt";
 import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
 import { redact } from "./redact";
+import { createScreenSender, liveRedact, screenLines } from "./screen";
 import { withReadGuard, withReadOnly } from "./settings";
 import { type Limit, StreamState } from "./stream";
 import { formatReset } from "./thai";
@@ -24,6 +25,8 @@ export const NOTES = {
   /** `[team-proposed]` (TASK-C-042 Q2): a read outside the project's folders was refused n times and the hop went on */
   readsRefused: (n: number) => `อ่านนอกโฟลเดอร์ถูกปฏิเสธ ${n} ครั้ง`,
   fault: (message: string) => `ตัวรันขัดข้อง: ${message}`,
+  /** `[PM-decided]` (SPEC-103 Q4, Porter 2026-10-29): a project folder is not under CAW_WORKSPACE_ROOT — the hop is refused before claude starts */
+  outsideWorkspace: "โฟลเดอร์งานต้องอยู่ใน CAW_WORKSPACE_ROOT — ก้าวนี้ไม่ได้เริ่ม",
   /** REQ-012: ถึงลิมิตการใช้งาน Claude — จะทำต่อได้หลัง {เวลา}; without a reset time only the part that needs none */
   limit: (resetsAt: number | null, now: Date) => `ถึงลิมิตการใช้งาน Claude${resetsAt === null ? "" : ` — จะทำต่อได้หลัง ${formatReset(resetsAt, now)}`}`,
 } as const;
@@ -53,6 +56,8 @@ export type HopDeps = {
   killGraceMs?: number;
   /** where each hop's stream is kept as `<hopId>.jsonl` (trace.ts); unset = no trace (tests) */
   traceDir?: string;
+  /** values the screen must never show (screen.ts `secretValues`), built once at runner start; unset = none beyond the key shapes */
+  secrets?: readonly string[];
   /** per project: the last event seq seen, so "where am I now" is not a walk from 0 every hop */
   cursors: Map<string, number>;
 };
@@ -77,8 +82,23 @@ const HEARTBEAT_MS = 30_000;
 
 /** how many read-guard refusals one hop may take before it is stopped: the setup step explores the folders, so a peek one step too far is told no; three is probing */
 const READ_GUARD_STOP_AT = 3;
-/** a hook block printed by our own read guard (`PreToolUse:<Read|Glob|Grep> hook error: [… read-guard.ts …]`) — the only block that is not a stop at once */
-const isReadGuardBlock = (b: { kind: string; text: string }) => b.kind === "hook" && /^PreToolUse:(Read|Glob|Grep) hook error:/.test(b.text.trim()) && b.text.includes("read-guard");
+/** a hook block printed by our own read guard (`PreToolUse:<Read|Glob|Grep|Bash> hook error: [… read-guard.ts …]`) — the only block that is not a stop at once. Bash joined in TASK-112
+ *  (SA-decided): the command is refused either way; the other Bash guard hooks do not name read-guard, so they still stop the hop at once. */
+const isReadGuardBlock = (b: { kind: string; text: string }) => b.kind === "hook" && /^PreToolUse:(Read|Glob|Grep|Bash) hook error:/.test(b.text.trim()) && b.text.includes("read-guard");
+
+/** Folder confinement (TASK-112, owner 13:41: no Bash sandbox, "จัดวาง folder"): every project folder, by REAL path, must be inside CAW_WORKSPACE_ROOT — and not that folder
+ *  itself, nor inside its `scripts/` (the guard hooks) or `.claude/` (the skills). Returns the first folder that is not, or null. A folder that does not exist yet is judged as given. */
+export function folderOutsideWorkspace(folders: readonly string[], workspaceRoot: string): string | null {
+  const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
+  const within = (p: string, dir: string) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+  const ws = real(workspaceRoot);
+  const barred = ["scripts", ".claude"].flatMap((d) => [join(ws, d), real(join(ws, d))]);
+  for (const f of folders) {
+    const r = real(f);
+    if (r === ws || !within(r, ws) || barred.some((b) => within(r, b))) return f;
+  }
+  return null;
+}
 
 /** The folders a hop may read: the project's roots and its own private folder — each as given and, when it differs, by its real path (macOS: /var → /private/var). */
 export function readableDirs(roots: readonly string[], hopDir: string): string[] {
@@ -247,6 +267,9 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const roots = [...writable, ...project.workspace.roots.filter((r) => readOnly.includes(r))];
     // A chat hop needs no folder to talk (MCP), but it READS the project's folders for the setup step (C-041): they are added, never its cwd (see below).
     if (messageId === null && writable.length === 0) { log(`hop ${hop.id}: the project has no workspace folders — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.noRoots }); }
+    // Without the Bash sandbox, the folders ARE the fence: no claude starts on a folder outside CAW_WORKSPACE_ROOT (TASK-112). Chat hops read the roots, so it counts for them too.
+    const stray = folderOutsideWorkspace(project.workspace.roots, config.workspaceRoot);
+    if (stray !== null) { log(`hop ${hop.id}: the project folder ${stray} is not inside CAW_WORKSPACE_ROOT ${config.workspaceRoot} (or is its scripts/ or .claude/) — hop stopped, claude not started`); return await finish({ outcome: "stopped", note: NOTES.outsideWorkspace }); }
     const skills = loadSkills(config.workspaceRoot, worker.skills);
     if (!skills.ok) { log(`hop ${hop.id}: skill ${skills.missing} not found under ${config.workspaceRoot}/.claude/skills — hop stopped`); return await finish({ outcome: "stopped", note: NOTES.skillMissing(skills.missing) }); }
 
@@ -279,6 +302,10 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const lines: string[] = []; // the stream as claude printed it, for the trace
     const stop = () => terminate(child, deps.killGraceMs ?? 5000);
     const timer = setTimeout(() => { end.note ??= NOTES.timeout; stop(); }, config.hopMaxMs);
+    // REQ-104: what the CLI prints is also shown, rendered and redacted, on the worker's screen. It rides on the stream read below and can change nothing of the hop:
+    // the sender never throws and never makes the hop wait for the API (screen.ts).
+    const secrets = deps.secrets ?? [];
+    const screen = createScreenSender({ post: (id, entries) => api.hopOutput(id, entries), hopId: hop.id, now: deps.now ?? (() => new Date()), log });
     let code: number;
     try {
       // The record that lets the NEXT runner find this child if this one is killed hard (procs.ts). Written the moment the child exists.
@@ -293,6 +320,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
       }
       await readLines(child.stdout, (line) => {
         lines.push(line);
+        try { for (const t of screenLines(line)) screen.push(liveRedact(t, secrets)); } catch (e) { log(`hop ${hop.id}: screen line skipped: ${messageOf(e)}`); }
         if (end.note === null && !beat.over && !beat.inFlight && !deps.stopping?.() && clock() - beat.lastSent >= HEARTBEAT_MS) {
           beat.lastSent = clock();
           beat.inFlight = true;
@@ -325,6 +353,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
       throw e;
     } finally {
       clearTimeout(timer);
+      await screen.close(); // what is queued goes out (≤ 3 s); never throws
       // kept whatever happened — a hop that is stopped or killed is the one somebody will want to read
       if (deps.traceDir) {
         try { log(`hop ${hop.id}: trace ${writeTrace(deps.traceDir, hop.id, lines)}`); } catch (e) { log(`hop ${hop.id}: could not write the trace: ${messageOf(e)}`); }

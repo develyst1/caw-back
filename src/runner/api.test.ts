@@ -41,6 +41,28 @@ describe("createApi", () => {
       ["hop.started", actor], ["hop.claimed", actor], ["hop.finished", actor],
     ]);
   });
+
+  test("hopOutput sends a batch as the RUNNER (POST /v1/hops/{id}/output, { entries }) → { stored }; the same batch again → stored 0; an unknown hop throws not_found", async () => {
+    const w = await world();
+    const hop = await w.api.startHop(w.project.id, { cardId: w.card.id, workerId: w.a.id });
+    const batch = [{ seq: 0, at: "2026-10-29T10:00:00.000Z", kind: "line" as const, text: "● session x" }, { seq: 1, at: "2026-10-29T10:00:05.000Z", kind: "gap" as const, text: "", gapSeconds: 4 }];
+    expect(await w.api.hopOutput(hop.id, batch)).toEqual({ stored: 2 });
+    expect(await w.api.hopOutput(hop.id, batch)).toEqual({ stored: 0 });
+    expect((await w.call("GET", `/v1/hops/${hop.id}/output`)).json.entries.map((e: any) => [e.seq, e.kind, e.gapSeconds])).toEqual([[0, "line", null], [1, "gap", 4]]);
+    const err = await w.api.hopOutput("00000000-0000-4000-8000-000000000099", batch).catch((e) => e);
+    expect(err).toBeInstanceOf(RunnerApiError);
+    expect([err.status, err.code]).toEqual([404, "not_found"]);
+  });
+
+  test("hopOutput names the runner in x-caw-actor and puts the entries in a JSON body", async () => {
+    const seen: { call?: { url: string; actor: string | null; body: unknown } } = {};
+    const api = createApi("http://caw.test", "runner:test-1", (url, init) => {
+      seen.call = { url, actor: new Headers(init?.headers).get("x-caw-actor"), body: JSON.parse(String(init?.body)) };
+      return new Response(JSON.stringify({ stored: 1 }), { status: 202 });
+    });
+    await api.hopOutput("a b", [{ seq: 3, at: "2026-10-29T10:00:00.000Z", kind: "truncated", text: "" }]);
+    expect(seen.call).toEqual({ url: "http://caw.test/v1/hops/a%20b/output", actor: "runner:test-1", body: { entries: [{ seq: 3, at: "2026-10-29T10:00:00.000Z", kind: "truncated", text: "" }] } });
+  });
 });
 
 describe("createApi — failures name themselves", () => {

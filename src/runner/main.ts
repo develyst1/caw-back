@@ -18,6 +18,7 @@ import { buildReport } from "./report";
 import { ProjectWatch } from "./watch";
 import { redact } from "./redact";
 import { writeSettings } from "./settings";
+import { secretValues } from "./screen";
 import { TRACE_KEEP, rotateTraces, traceDirFrom } from "./trace";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -350,12 +351,15 @@ if (import.meta.main) {
   const traceDir = traceDirFrom(process.env);
   rotateTraces(traceDir, TRACE_KEEP, log);
 
+  // REQ-104: the values the worker's screen must never show, built once from this process's environment (Bun has loaded the repo's .env into it)
+  const secrets = secretValues(process.env);
+
   const live = new Set<Child>();
   let stopping = false;
   const api = createApi(config.apiUrl, `runner:${instance}`);
   const checkIn = createCheckIn({ api, log });
   const runner = createRunner({
-    api, config, tmpRoot, settingsFile, log, cursors: new Map(), instance, stopping: () => stopping, traceDir,
+    api, config, tmpRoot, settingsFile, log, cursors: new Map(), instance, stopping: () => stopping, traceDir, secrets,
     spawn: (cmd, opts) => { const c = bunSpawn(cmd, opts); live.add(c); void c.exited.finally(() => live.delete(c)); return c; },
   });
 

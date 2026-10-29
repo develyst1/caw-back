@@ -1,13 +1,13 @@
 // runHop against the REAL app on PGlite (test/helpers, imported not edited) and a FAKE `claude` child (a stream of recorded lines).
 // What the fake child does through MCP in a real hop (comment, hand_off …) the test does through the API as that worker.
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chainOf3, newCard, setup } from "../../test/helpers/api";
 import { RunnerApiError, createApi } from "./api";
 import { HOOKS } from "./config";
-import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, runHop } from "./hop";
+import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, folderOutsideWorkspace, runHop } from "./hop";
 import { type Procs, readHopFile } from "./procs";
 import { fakeChild, fixture, hopAware, limitFixture } from "./testkit";
 import { formatReset } from "./thai";
@@ -16,12 +16,13 @@ const made: string[] = []; // every temp folder a test makes, removed in afterAl
 const tmp = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix)); made.push(d); return d; };
 afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 const WS = tmp("caw-hop-ws-");
+const inWs = (prefix: string) => mkdtempSync(join(WS, prefix)); // removed with WS in afterAll
 mkdirSync(join(WS, ".claude/skills/role-be"), { recursive: true });
 writeFileSync(join(WS, ".claude/skills/role-be/SKILL.md"), "BE craft");
 
 /** the runner's base settings file, which every hop extends with its own read fence (TASK-C-042) */
 const baseSettings = join(tmp("caw-hop-base-"), "settings.json");
-writeFileSync(baseSettings, JSON.stringify({ permissions: { allow: [], deny: [] }, sandbox: { enabled: true }, hooks: { PreToolUse: [] } }));
+writeFileSync(baseSettings, JSON.stringify({ permissions: { allow: [], deny: [] }, hooks: { PreToolUse: [] } })); // like buildSettings now: no `sandbox` key (TASK-112)
 
 async function world(over: { roots?: string[]; skills?: string[]; hopMaxMs?: number } = {}) {
   const t0 = await setup();
@@ -29,8 +30,8 @@ async function world(over: { roots?: string[]; skills?: string[]; hopMaxMs?: num
   const { project, a } = await chainOf3(t.call);
   const worker = (await t.call("POST", "/v1/workers", { name: "Blew", role: "BE", skills: over.skills ?? ["role-be"], model: "haiku", effort: "low" })).json;
   await t.call("POST", `/v1/projects/${project.id}/chain/members`, { workerId: worker.id });
-  const rootA = tmp("caw-hop-root-");
-  const rootB = tmp("caw-hop-root-");
+  const rootA = inWs("caw-hop-root-"); // project folders are under CAW_WORKSPACE_ROOT (= WS): hop.ts refuses any other (TASK-112)
+  const rootB = inWs("caw-hop-root-");
   const roots = over.roots ?? [rootA, rootB];
   if (roots.length) { const r = await t.call("PATCH", `/v1/projects/${project.id}/workspace`, { roots }); if (r.status !== 200) throw new Error(JSON.stringify(r.json)); }
   const card = (await newCard(t.call, project.id, { assigneeId: worker.id })).json;
@@ -841,7 +842,7 @@ describe("read-only folders for a card hop (TASK-C-042 Part B, D-100, REQ-015 R4
   };
   const settingsOf = (cmd: string[]) => JSON.parse(readFileSync(cmd[cmd.indexOf("--settings") + 1]!, "utf8"));
 
-  test("cwd = the first WRITABLE root, every other root (both kinds) is added, and the read-only one is denied Edit / Write twice (permission + sandbox)", async () => {
+  test("cwd = the first WRITABLE root, every other root (both kinds) is added, and the read-only one is denied Edit / Write (permission rules; the sandbox's denyWrite is gone, TASK-112)", async () => {
     const { all, cmd, cwd, w } = await withRo((r) => [r[0]!]);
     expect(cwd).toBe(all[1]!);
     const at = cmd!.indexOf("--add-dir");
@@ -861,7 +862,7 @@ describe("read-only folders for a card hop (TASK-C-042 Part B, D-100, REQ-015 R4
     await runHop(w.deps, { ...inp, project: { ...inp.project, workspace: { roots: [a!, b!], readOnly: [a!] } } as any });
     expect(seen.permissions.allow).toEqual(["x"]);
     expect(seen.permissions.deny).toEqual(["Bash(curl *)", `Edit(/${a}/**)`, `Write(/${a}/**)`]);
-    expect(seen.sandbox.filesystem.denyWrite).toEqual([a]);
+    expect(seen.sandbox?.filesystem).toBeUndefined(); // was: seen.sandbox.filesystem.denyWrite = [a] (TASK-112: no sandbox keys are added)
     expect(seen.permissions.deny.join(" ")).not.toContain(b!);
   });
   test("the roots in the other order: still cwd = the first writable one", async () => {
@@ -874,7 +875,7 @@ describe("read-only folders for a card hop (TASK-C-042 Part B, D-100, REQ-015 R4
     w.set(() => { seen = settingsOf(w.spawned[w.spawned.length - 1]!.cmd); return fakeChild({ lines: fixture("ok") }); });
     await runHop(w.deps, await w.input());
     expect(seen.permissions.deny.filter((d: string) => d.startsWith("Edit(") || d.startsWith("Write("))).toEqual([]);
-    expect(seen.sandbox.filesystem.denyWrite).toBeUndefined();
+    expect(seen.sandbox?.filesystem?.denyWrite).toBeUndefined();
   });
   test("a project without `readOnly` (a core before A-094) is read as []", async () => {
     const w = await world();
@@ -883,7 +884,7 @@ describe("read-only folders for a card hop (TASK-C-042 Part B, D-100, REQ-015 R4
     w.set(() => { seen = settingsOf(w.spawned[w.spawned.length - 1]!.cmd); return fakeChild({ lines: fixture("ok") }); });
     await runHop(w.deps, { ...inp, project: { ...inp.project, workspace: { roots: inp.project.workspace.roots } } });
     expect(w.spawned[0]!.cwd).toBe(inp.project.workspace.roots[0]!);
-    expect(seen.sandbox.filesystem.denyWrite).toBeUndefined();
+    expect(seen.sandbox?.filesystem?.denyWrite).toBeUndefined();
   });
   test("every root read-only: nowhere to work — stopped with today's noRoots note, claude not spawned", async () => {
     const { w } = await withRo((r) => [...r]);
@@ -927,16 +928,16 @@ describe("the read fence of every hop (TASK-C-042 Part A, UP-3: client data must
     return { seen, roots: inp.project.workspace.roots, hopDir };
   }
   for (const chat of [false, true]) {
-    test(`a ${chat ? "CHAT" : "CARD"} hop: ~/ denied for Bash reads, the roots and its own folder re-allowed, the file-tool guard hook with the same folders, and no blockReads key`, async () => {
+    // was: "~/ denied for Bash reads, the roots and its own folder re-allowed (sandbox denyRead / allowRead), the file-tool guard hook …". TASK-112: the hook (now on Bash too) is the whole fence.
+    test(`a ${chat ? "CHAT" : "CARD"} hop: the guard hook (Read|Glob|Grep|Bash) with the roots and its own folder, no sandbox keys, and no blockReads key`, async () => {
       const { seen, roots, hopDir } = await fence(chat);
-      expect(seen.sandbox.filesystem.denyRead).toEqual(["~/"]);
-      for (const d of [...roots, hopDir]) expect(seen.sandbox.filesystem.allowRead).toContain(d);
-      const hook = seen.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep");
+      expect(seen.sandbox?.filesystem).toBeUndefined();
+      const hook = seen.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep|Bash"); // TASK-112: Bash joined the matcher
       expect(hook).toBeDefined();
       const args = JSON.parse(hook.hooks[0].command.slice(hook.hooks[0].command.indexOf("'[") + 1, -1));
       for (const d of [...roots, hopDir]) expect(args).toContain(d);
       expect(seen.permissions.blockReadsOutsideWorkingDirectories).toBeUndefined();
-      expect(seen.sandbox.enabled).toBe(true); // the sandbox stays on
+      expect("sandbox" in seen).toBe(false); // the runner switches no sandbox on (was: seen.sandbox.enabled === true)
     });
   }
   test("a base file that cannot be read: the hop FAILS (it never runs on settings it could not read, so never unfenced) and claude is not started", async () => {
@@ -1006,10 +1007,174 @@ describe("read-guard refusals are SOFT, counted, and the 3rd stops the hop (TASK
     expect(h.note).toContain(WORDS(1));
     expect(h.note).toContain("tools:");
   });
+  // TASK-112 (SA-decided): a refusal by OUR read guard on a Bash command is soft too, and shares the counter. The recorded pair, re-labelled as a Bash tool's refusal.
+  const bashRefusal = (n: number): string[] => refusal(n).map((l) => l.split("PreToolUse:Read hook error").join("PreToolUse:Bash hook error"));
+  const bashRefusals = (k: number) => Array.from({ length: k }, (_, i) => bashRefusal(i)).flat();
+  test("Bash: 1 and 2 refusals by read-guard → the hop goes on and ends normally, the note counts them, the child is not killed", async () => {
+    expect(bashRefusal(0).join("\n")).toContain("PreToolUse:Bash hook error");
+    expect(bashRefusal(0).join("\n")).toContain("read-guard");
+    for (const k of [1, 2]) {
+      const w = await world();
+      let child!: ReturnType<typeof fakeChild>;
+      w.set(() => (child = fakeChild({ lines: [...bashRefusals(k), ...fixture("ok")], before: comment(w) })));
+      await runHop(w.deps, await w.input());
+      const h = await w.finished();
+      expect([k, h.outcome, h.note]).toEqual([k, "commented", WORDS(k)]);
+      expect(child.killed).toBe(false);
+    }
+  });
+  test("Bash: the 3rd refusal stops the hop; Read and Bash refusals share ONE counter (Read, Bash, Bash → stopped)", async () => {
+    const w = await world();
+    const child = fakeChild({ lines: [...refusal(0), ...bashRefusal(1), ...bashRefusal(2), ...fixture("ok")], hang: true });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    const h = await w.finished();
+    expect(h.outcome).toBe("stopped");
+    expect(h.note.startsWith("หยุดไว้: Blew พยายาม")).toBe(true);
+    expect(child.killed).toBe(true);
+  });
+  test("Bash: a block by ANOTHER guard hook (its text does not name read-guard) still stops the hop at once", async () => {
+    const w = await world();
+    const other = bashRefusal(0).map((l) => l.split("read-guard").join("block-irreversible"));
+    const child = fakeChild({ lines: [...other, ...fixture("ok")], hang: true });
+    w.set(() => child);
+    await runHop(w.deps, await w.input());
+    expect((await w.finished()).outcome).toBe("stopped");
+    expect(child.killed).toBe(true);
+  });
   test("no refusal, no words in the note", async () => {
     const w = await world();
     w.set(() => fakeChild({ lines: fixture("ok"), before: comment(w) }));
     await runHop(w.deps, await w.input());
     expect((await w.finished()).note).toBe("");
+  });
+});
+
+describe("the worker's screen: what the child prints is also sent, rendered and redacted (REQ-104, SPEC-103 § The runner 4)", () => {
+  const comment = (w: Awaited<ReturnType<typeof world>>) => async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); };
+  const KEY = "sk-test-abcdefghijklmnopqrstuvwx";
+  const stream = [
+    JSON.stringify({ type: "system", subtype: "init", model: "stub-model" }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "first line\nsecond line" }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `leaked ${KEY} and topsecretvalue and token=abc123` }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__caw__comment", input: { text: "hi" } }] } }),
+    "this line is not JSON",
+    JSON.stringify({ type: "result", subtype: "success", num_turns: 2 }),
+  ];
+  const outputOf = async (w: Awaited<ReturnType<typeof world>>) => (await w.call("GET", `/v1/hops/${w.hop.id}/output`)).json as { entries: { seq: number; kind: string; text: string }[]; more: boolean };
+
+  test("a hop whose child prints lines → the API holds them in order, redacted (a bare key, a known value, token=), and the hop ends as before", async () => {
+    const w = await world();
+    w.deps.secrets = ["topsecretvalue"];
+    w.set(() => fakeChild({ lines: stream, before: comment(w) }));
+    await runHop(w.deps, await w.input());
+    const out = await outputOf(w);
+    expect(out.entries.map((e) => e.text)).toEqual([
+      "● session stub-model", "first line", "second line", "leaked *** and *** and token=***", "▸ comment {\"text\":\"hi\"}", "■ success · turns 2",
+    ]);
+    expect(out.entries.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(out.entries.every((e) => e.kind === "line")).toBe(true);
+    expect(JSON.stringify(out)).not.toContain(KEY);
+    expect(JSON.stringify(out)).not.toContain("topsecretvalue");
+    expect((await w.finished()).outcome).toBe("commented");
+  });
+
+  test("AC-6: a hop whose output POSTs all fail ends with the SAME outcome, note and tokens as one without any trouble — the failure is only logged", async () => {
+    const good = await world();
+    good.set(() => fakeChild({ lines: stream, before: comment(good) }));
+    await runHop(good.deps, await good.input());
+    const g = await good.finished(); // read now: the next world() empties the shared test database
+
+    const bad = await world();
+    bad.deps.api = { ...bad.api, hopOutput: async () => { throw new RunnerApiError(500, "internal", "boom"); } };
+    bad.set(() => fakeChild({ lines: stream, before: comment(bad) }));
+    await runHop(bad.deps, await bad.input());
+
+    const b = await bad.finished();
+    expect([b.outcome, b.note, b.tokensIn, b.tokensOut]).toEqual([g.outcome, g.note, g.tokensIn, g.tokensOut]);
+    expect(b.outcome).toBe("commented");
+    expect((await outputOf(bad)).entries).toEqual([]);
+    expect(bad.log.some((l) => l.includes("screen output not sent") && l.includes("boom"))).toBe(true);
+    expect(bad.log.filter((l) => l.includes("screen output not sent"))).toHaveLength(1);
+  });
+
+  test("AC-6: output POSTs that never answer do not hold the hop longer than the 3 s close — same outcome again", async () => {
+    const w = await world();
+    w.deps.api = { ...w.api, hopOutput: () => new Promise(() => {}) };
+    w.set(() => fakeChild({ lines: stream, before: comment(w) }));
+    const t0 = Date.now();
+    await runHop(w.deps, await w.input());
+    expect(Date.now() - t0).toBeLessThan(6000);
+    expect((await w.finished()).outcome).toBe("commented");
+  }, 15_000);
+
+  test("a child that prints nothing stores nothing, and the hop ends as before", async () => {
+    const w = await world();
+    w.set(() => fakeChild({ lines: [], before: comment(w) }));
+    await runHop(w.deps, await w.input());
+    expect((await outputOf(w)).entries).toEqual([]);
+    expect((await w.finished()).outcome).toBe("commented");
+  });
+});
+
+describe("folder confinement: no claude on a project folder outside CAW_WORKSPACE_ROOT (TASK-112, owner 13:41 — no Bash sandbox, the folders are the fence)", () => {
+  const NOTE = "โฟลเดอร์งานต้องอยู่ใน CAW_WORKSPACE_ROOT — ก้าวนี้ไม่ได้เริ่ม";
+  const refusedHop = async (roots: string[]) => {
+    const w = await world({ roots });
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); } }));
+    await runHop(w.deps, await w.input());
+    return { w, h: await w.finished() };
+  };
+
+  test("a project root outside CAW_WORKSPACE_ROOT → stopped with the PM's note, claude not spawned, one log line naming the folder", async () => {
+    const outside = tmp("caw-hop-outside-");
+    const { w, h } = await refusedHop([outside]);
+    expect([h.outcome, h.note]).toEqual(["stopped", NOTE]);
+    expect(w.spawned).toHaveLength(0);
+    expect(w.log.filter((l) => l.includes("not inside CAW_WORKSPACE_ROOT") && l.includes(outside))).toHaveLength(1);
+    expect(existsSync(join(w.tmpRoot, `hop-${h.id}`))).toBe(false); // nothing was set up for it
+  });
+
+  test("one bad root among good ones refuses the whole hop (a read-only folder counts too)", async () => {
+    const good = inWs("caw-hop-good-");
+    const { w, h } = await refusedHop([good, tmp("caw-hop-outside-")]);
+    expect([h.outcome, h.note, w.spawned.length]).toEqual(["stopped", NOTE, 0]);
+  });
+
+  test("a root equal to CAW_WORKSPACE_ROOT, or under its scripts/ or .claude/ → refused", async () => {
+    mkdirSync(join(WS, "scripts", "x"), { recursive: true });
+    mkdirSync(join(WS, ".claude", "x"), { recursive: true });
+    for (const bad of [WS, join(WS, "scripts"), join(WS, "scripts", "x"), join(WS, ".claude"), join(WS, ".claude", "x"), join(WS, ".claude", "skills", "role-be")]) {
+      const { w, h } = await refusedHop([bad]);
+      expect([bad, h.outcome, h.note, w.spawned.length]).toEqual([bad, "stopped", NOTE, 0]);
+    }
+  });
+
+  test("a '..' that climbs out, and a symlink inside CAW_WORKSPACE_ROOT that points outside → refused (the real path decides)", async () => {
+    const outside = tmp("caw-hop-outside-");
+    const link = join(inWs("caw-hop-link-"), "out");
+    symlinkSync(outside, link);
+    for (const bad of [link, join(WS, "..", "somewhere-else")]) {
+      const { w, h } = await refusedHop([bad]);
+      expect([bad.endsWith("somewhere-else") ? "dotdot" : "symlink", h.outcome, w.spawned.length]).toEqual([bad.endsWith("somewhere-else") ? "dotdot" : "symlink", "stopped", 0]);
+    }
+  });
+
+  test("roots inside CAW_WORKSPACE_ROOT (a sub-folder, a nested one, one that does not exist yet) → spawns as before", async () => {
+    const a = inWs("caw-hop-in-");
+    const nested = join(a, "deep", "er");
+    mkdirSync(nested, { recursive: true });
+    const w = await world({ roots: [a, nested] });
+    w.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "done" }, w.actor); } }));
+    await runHop(w.deps, await w.input());
+    expect(w.spawned).toHaveLength(1);
+    expect((await w.finished()).outcome).toBe("commented");
+  });
+
+  test("folderOutsideWorkspace on its own: null for inside, the folder for outside; no folders → null", () => {
+    expect(folderOutsideWorkspace([], WS)).toBeNull();
+    expect(folderOutsideWorkspace([join(WS, "p")], WS)).toBeNull();
+    expect(folderOutsideWorkspace([join(WS, "p"), "/etc"], WS)).toBe("/etc");
+    expect(folderOutsideWorkspace([WS + "-sibling"], WS)).toBe(WS + "-sibling"); // a sibling whose name starts like it is not inside
   });
 });

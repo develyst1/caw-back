@@ -1,6 +1,8 @@
 // A small client for the CAW HTTP API (SPEC-A-008). The runner knows nothing the API does not tell it (SPEC-C-003 § 1).
 // Every write names its actor with X-CAW-Actor. A refused call throws — there is no fallback value anywhere in here.
-export type Fetch = (url: string, init?: RequestInit) => Promise<Response> | Response;
+import type { ScreenEntry } from "./screen";
+
+export type Fetch =(url: string, init?: RequestInit) => Promise<Response> | Response;
 
 export class RunnerApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(`${status} ${code}: ${message}`); }
@@ -93,6 +95,8 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
     /** contract v1.16 rev. 1: "this runner is alive" (`running`) or "I am stopping" (`stopping`), runner actor only → 204 with NO body — the only call that may have an empty one */
     checkIn: async (state: "running" | "stopping"): Promise<void> => { await call<unknown>("POST", "/v1/runner/check-in", actor, { state }, true); },
     finishHop: (hopId: string, finish: Finish) => call<Hop>("PATCH", `/v1/hops/${enc(hopId)}`, actor, finish),
+    /** REQ-104: a batch of what the hop's CLI showed (rendered and redacted by screen.ts), runner actor only → 202 `{ stored }`; a (hopId, seq) already stored is skipped */
+    hopOutput: (hopId: string, entries: ScreenEntry[]) => call<{ stored: number }>("POST", `/v1/hops/${enc(hopId)}/output`, actor, { entries }),
   };
 }
 export type Api = ReturnType<typeof createApi>;

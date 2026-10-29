@@ -23,6 +23,7 @@ const RUNNER_ROUTES: { method: string; path: RegExp }[] = [
   { method: "PATCH", path: /^\/v1\/hops\/[^/]+$/ },
   { method: "POST", path: /^\/v1\/hops\/[^/]+\/heartbeat$/ },
   { method: "POST", path: /^\/v1\/runner\/check-in$/ }, // v1.16: process liveness, no event
+  { method: "POST", path: /^\/v1\/hops\/[^/]+\/output$/ }, // REQ-104: what the hop's CLI showed, no event
 ];
 const RUNNER_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -44,7 +45,7 @@ export const actorRule = (db: Db): MiddlewareHandler<Env> => async (c, next) => 
     throw new ApiError(400, "actor_required", "send X-CAW-Actor: operator, worker:<workerId> or runner:<name> (name = letters, digits, _ and -, 1–64)");
   }
   if (runner !== null && !RUNNER_ROUTES.some((r) => r.method === c.req.method && r.path.test(c.req.path))) {
-    throw new ApiError(403, "runner_not_allowed", "a runner may only open / finish runs, start / finish / claim hops, send a hop heartbeat and check in");
+    throw new ApiError(403, "runner_not_allowed", "a runner may only open / finish runs, start / finish / claim hops, send a hop heartbeat, send a hop's output and check in");
   }
   if (worker !== null) {
     const [known] = await db.select({ id: workers.id }).from(workers).where(eq(workers.id, worker));

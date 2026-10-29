@@ -40,10 +40,8 @@ export function buildSettings(hooks: readonly string[]): object {
     // `false` = "All MCP tools loaded upfront, no deferral" (code.claude.com/docs/en/mcp, "Configure tool search").
     env: { ENABLE_TOOL_SEARCH: "false" },
     permissions: { allow: [...WORKER_ALLOW], deny: DENY },
-    // R-4: shell commands run in Claude Code's own OS sandbox with no network ("allowedDomains" starts empty; "strictAllowlist" denies instead of
-    // asking). It covers shell commands only — the web tools are --disallowedTools, MCP and hooks run outside it. Keys: code.claude.com/docs/en/sandboxing.
-    // "failIfUnavailable" + "allowUnsandboxedCommands: false": no silent fallback to unsandboxed, and the model cannot retry outside it.
-    sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, network: { allowedDomains: [], strictAllowlist: true } },
+    // No Claude Bash sandbox (owner Nichaphon 13:41 and 14:03, SPEC-103 § "No Bash sandbox"): it needs socat/bubblewrap on the host. What keeps a hop in its folders instead is the
+    // allow-list and denies above (no curl / wget / nc / ssh / scp), the read-guard hook on Read|Glob|Grep|Bash (withReadGuard) and hop.ts's folder confinement.
     hooks: {
       PreToolUse: [
         { matcher: "Bash", hooks: hooks.map(run) },
@@ -53,31 +51,28 @@ export function buildSettings(hooks: readonly string[]): object {
   };
 }
 
-/** The base settings plus, for each READ-ONLY folder (D-100): Edit and Write denied (permission paths use `//` for an absolute path) and the Bash sandbox's
- *  `filesystem.denyWrite` — the two layers that refuse a write into it. Pure: the base is not changed; with no read-only folder it comes back as it is. */
+/** The base settings plus, for each READ-ONLY folder (D-100): Edit and Write denied (permission paths use `//` for an absolute path). No allowed Bash command writes
+ *  (the allow-list is read-only commands and `bun test`), so there is no second layer any more. Pure: the base is not changed; with no read-only folder it comes back as it is. */
 export function withReadOnly(base: any, readOnly: readonly string[]): any {
   if (readOnly.length === 0) return base;
   const dirs = readOnly.map((d) => d.replace(/\/+$/, ""));
   return {
     ...base,
     permissions: { ...base.permissions, deny: [...(base.permissions?.deny ?? []), ...dirs.flatMap((d) => [`Edit(/${d}/**)`, `Write(/${d}/**)`])] },
-    sandbox: { ...base.sandbox, filesystem: { ...base.sandbox?.filesystem, denyWrite: [...(base.sandbox?.filesystem?.denyWrite ?? []), ...dirs] } },
   };
 }
 
 /** the guard script the file-tool hook runs (an absolute path: the hook's cwd is the worker's folder) */
 export const READ_GUARD_SCRIPT = fileURLToPath(new URL("./read-guard.ts", import.meta.url));
 
-/** The read fence of EVERY hop (TASK-C-042 Part A, UP-3 — client data must never reach the model). The key `permissions.blockReadsOutsideWorkingDirectories` would do it
- *  but stalls claude at start-up with our Bash sandbox, so the same fence is built from two parts that do not:
- *   - Bash: `sandbox.filesystem.denyRead ["~/"]` and `allowRead` = the readable folders (the docs' "deny home, re-allow the narrower path" pattern);
- *   - Read / Glob / Grep: a PreToolUse hook (read-guard.ts) with the readable folders as its ONE argument — `denyRead` does not cover the file tools.
+/** The read fence of EVERY hop (TASK-C-042 Part A, UP-3 — client data must never reach the model). One PreToolUse hook (read-guard.ts) on Read | Glob | Grep | Bash with the
+ *  readable folders as its ONE argument. The key `permissions.blockReadsOutsideWorkingDirectories` would do it but stalls claude at start-up, and the Bash sandbox's
+ *  `denyRead` is gone with the sandbox (owner 13:41), so for Bash the hook judges the command's words itself and fails closed (read-guard.ts).
  *  `readable` = the project's roots + the hop's private folder. Pure: the base is not changed. */
 export function withReadGuard(base: any, readable: readonly string[]): any {
-  const hook = { matcher: "Read|Glob|Grep", hooks: [{ type: "command", command: `${shellWord(process.execPath)} ${shellWord(READ_GUARD_SCRIPT)} ${shellWord(JSON.stringify(readable))}` }] };
+  const hook = { matcher: "Read|Glob|Grep|Bash", hooks: [{ type: "command", command: `${shellWord(process.execPath)} ${shellWord(READ_GUARD_SCRIPT)} ${shellWord(JSON.stringify(readable))}` }] };
   return {
     ...base,
-    sandbox: { ...base.sandbox, filesystem: { ...base.sandbox?.filesystem, denyRead: [...(base.sandbox?.filesystem?.denyRead ?? []), "~/"], allowRead: [...(base.sandbox?.filesystem?.allowRead ?? []), ...readable] } },
     hooks: { ...base.hooks, PreToolUse: [...(base.hooks?.PreToolUse ?? []), hook] },
   };
 }

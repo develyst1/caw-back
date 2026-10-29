@@ -192,3 +192,18 @@ export const followState = caw.table("follow_state", {
   lastPulledVersion: integer("last_pulled_version").notNull(),
   lastPullAt: at("last_pull_at"),
 });
+
+// Operational, not replayed (REQ-104): what a hop's CLI showed, rendered and redacted by the runner. Append-only by (hop_id, seq).
+export const hopOutput = caw.table("hop_output", {
+  hopId: uuid("hop_id").notNull().references(() => hops.id),
+  seq: integer("seq").notNull(),
+  at: at("at").notNull(),
+  kind: text("kind").notNull(),
+  text: text("text").notNull().default(""),
+  gapSeconds: integer("gap_seconds"),
+}, (t) => [
+  primaryKey({ columns: [t.hopId, t.seq] }),
+  check("hop_output_kind", sql`${t.kind} in ('line','gap','truncated')`),
+  check("hop_output_text_length", sql`char_length(${t.text}) <= 2000`),
+  check("hop_output_gap", sql`(${t.kind} = 'gap') = (${t.gapSeconds} is not null)`),
+]);

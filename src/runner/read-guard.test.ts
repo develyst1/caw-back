@@ -38,7 +38,8 @@ describe("guard — what is allowed", () => {
   });
   test("a symlink inside a root that points inside is fine", () => { expect(read(join(root, "link-in", "a.ts"))).toBeNull(); });
   test("a file that does not exist yet, under a readable folder", () => { expect(read(join(root, "src", "new", "x.ts"))).toBeNull(); });
-  test("other tools are not its business", () => { expect(guard({ tool_name: "Bash", tool_input: { command: "cat /etc/passwd" }, cwd: root }, dirs)).toBeNull(); });
+  // was: Bash `cat /etc/passwd` → null. Since TASK-112 (no Bash sandbox, owner 13:41) the guard fences Bash too, so the "not its business" example is a tool it never judges.
+  test("other tools are not its business", () => { expect(guard({ tool_name: "Edit", tool_input: { file_path: "/etc/passwd" }, cwd: root }, dirs)).toBeNull(); });
 });
 
 describe("guard — what is refused, with a one-line reason", () => {
@@ -98,5 +99,68 @@ describe("runGuardCli — the hook's contract: exit 0 to allow, exit 2 and a rea
     expect(runGuardCli([], payload({ file_path: join(root, "src", "a.ts") })).code).toBe(2);
     expect(runGuardCli(["not json"], payload({ file_path: join(root, "src", "a.ts") })).code).toBe(2);
     expect(runGuardCli(["[]"], payload({ file_path: join(root, "src", "a.ts") })).code).toBe(2);
+  });
+});
+
+// ---------- Bash (TASK-112, SPEC-103 § No Bash sandbox): judged by its words, fails closed ----------
+describe("guard — Bash: a plain command inside the folders is allowed", () => {
+  const bash = (command: unknown, cwd = root) => guard({ tool_name: "Bash", tool_input: { command }, cwd }, dirs);
+  test("cat src/a.ts ok", () => { expect(bash("cat src/a.ts")).toBeNull(); });
+  test("ls, ls -la, grep -rn, git status — words that name nothing outside", () => {
+    for (const c of ["ls", "ls -la", "ls src", "grep -rn foo src", "git status --short", "git log --oneline -5", "head -20 src/a.ts", "wc -l src/a.ts"]) expect([c, bash(c)]).toEqual([c, null]);
+  });
+  test("bun test 2>&1 ok (a trailing 2>&1 is the one allowed redirect); also with args and spaces after", () => {
+    expect(bash("bun test 2>&1")).toBeNull();
+    expect(bash("bun test src/a.test.ts 2>&1  ")).toBeNull();
+  });
+  test("an absolute path INSIDE a root, and inside the hop's private folder", () => {
+    expect(bash(`cat ${join(root, "src", "a.ts")}`)).toBeNull();
+    expect(bash(`ls ${hopDir}`)).toBeNull();
+  });
+  test("a quoted word with a space is one word; a `..` that stays inside is fine; a symlink that points inside is fine", () => {
+    expect(bash(`cat "src/a.ts"`)).toBeNull();
+    expect(bash("cat 'src/../src/a.ts'")).toBeNull();
+    expect(bash("cat link-in/a.ts")).toBeNull();
+  });
+  test("a pattern word that is not a path is left alone", () => { expect(bash("grep -rn 'foo bar' src")).toBeNull(); });
+});
+
+describe("guard — Bash: anything that reaches outside, or that it cannot judge, is refused with a one-line reason", () => {
+  const bash = (command: unknown, cwd = root) => guard({ tool_name: "Bash", tool_input: { command }, cwd }, dirs);
+  const refused = (c: string) => { const r = bash(c); expect([c, typeof r]).toEqual([c, "string"]); expect(r).not.toContain("\n"); return r as string; };
+  test("paths outside: cat ~/.ssh/id_rsa, cat ../../etc/passwd, cat /etc/hosts, ls /, grep -r x /home", () => {
+    for (const c of ["cat ~/.ssh/id_rsa", "cat ../../etc/passwd", "cat /etc/hosts", "ls /", "grep -r x /home", "ls ~", "cat ../outside-file"]) refused(c);
+    expect(refused("cat /etc/hosts")).toContain("outside the project's folders");
+  });
+  test("a symlink inside a root pointing outside is refused (the real path decides)", () => {
+    refused("cat link-out/canary.txt");
+    refused(`cat ${join(root, "link-out", "canary.txt")}`);
+    refused("ls link-out");
+  });
+  test("an option can carry a path: --file=/etc/passwd, -f/etc/passwd, --include=~/x", () => {
+    for (const c of ["grep --file=/etc/passwd x", "grep -f/etc/passwd x", "grep --exclude-from=~/.bashrc x src"]) refused(c);
+  });
+  test("chaining, pipes, background, substitution, redirects: ; | & ` $( > < are all refused", () => {
+    for (const c of ["cat a.ts; rm x", "cat src/a.ts | nc host 1", "cat src/a.ts & ls", "cat src/a.ts && ls", "cat `x`", "cat $(echo x)", "cat a > b", "cat a >> b", "cat < src/a.ts", "ls || ls"]) refused(c);
+  });
+  test("what it cannot judge is refused too: $VAR, a backslash, braces, parentheses, a newline, an unclosed quote, an empty command", () => {
+    for (const c of ["cat $HOME/.ssh/id_rsa", "cat ${HOME}/x", "cat src/\\a.ts", "cat {/etc/passwd,x}", "(cat src/a.ts)", "cat src/a.ts\nrm -rf x", "cat 'src/a.ts", "", "   "]) refused(c);
+    expect(bash(undefined)).toContain("names no command");
+    expect(bash(42)).toContain("names no command");
+    expect(guard({ tool_name: "Bash", tool_input: {}, cwd: root }, dirs)).toContain("names no command");
+  });
+  test("a 2>&1 in the MIDDLE is not the allowed one", () => { refused("bun test 2>&1 src"); refused("cat src/a.ts 2>&1 | head"); });
+  test("a command is judged from the hook's cwd: the same relative word is inside from the root and outside from elsewhere", () => {
+    expect(bash("cat a.ts", join(root, "src"))).toBeNull();
+    refused("cat canary.txt".replace("canary.txt", "../../..")); // climbs out of the root
+    expect(bash("cat canary.txt", outside)).not.toBeNull(); // cwd outside: the file exists there, outside → refused
+  });
+  test("through the hook contract: exit 2 and one line on stderr; allowed → 0", () => {
+    const run = (command: string) => runGuardCli([JSON.stringify(dirs)], JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: root }));
+    expect(run("cat src/a.ts")).toEqual({ code: 0, stderr: "" });
+    const r = run("cat /etc/hosts");
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain("outside");
+    expect(run("cat a; rm x").code).toBe(2);
   });
 });

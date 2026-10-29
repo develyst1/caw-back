@@ -32,7 +32,7 @@ async function world() {
   const { project } = await chainOf3(t.call);
   const worker = (await t.call("POST", "/v1/workers", { name: "Blew", role: "BE", skills: ["role-be"], model: "haiku", effort: "low" })).json;
   await t.call("POST", `/v1/projects/${project.id}/chain/members`, { workerId: worker.id });
-  await t.call("PATCH", `/v1/projects/${project.id}/workspace`, { roots: [tmp("caw-main-root-")] });
+  await t.call("PATCH", `/v1/projects/${project.id}/workspace`, { roots: [mkdtempSync(join(WS, "caw-main-root-"))] }); // under WS (= CAW_WORKSPACE_ROOT): hop.ts refuses any other folder (TASK-112); removed with WS
   const card = (await newCard(t.call, project.id, { assigneeId: worker.id })).json;
   const api = createApi("http://caw.test", "runner:test", (url, init) => t.app.fetch(new Request(url, init)));
   const actor = `worker:${worker.id}`;

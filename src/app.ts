@@ -9,6 +9,7 @@ import { chatRoutes } from "./http/routes/chat";
 import { chainRoutes } from "./http/routes/chain";
 import { followRoutes } from "./http/routes/follow";
 import { hopRoutes } from "./http/routes/hops";
+import { outputRoutes } from "./http/routes/output";
 import { proposalRoutes } from "./http/routes/proposals";
 import { seamRoutes } from "./http/routes/seam";
 import { createTeamStatus, teamRoutes, type TeamStatusHolder } from "./http/routes/team";
@@ -29,6 +30,7 @@ export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follow
   chainRoutes(app, db);
   cardRoutes(app, db, blueprint);
   hopRoutes(app, db);
+  outputRoutes(app, db);
   chatRoutes(app, db);
   proposalRoutes(app, db, blueprint);
   seamRoutes(app, db, blueprint);

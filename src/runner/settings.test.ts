@@ -57,13 +57,11 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
     for (const t of ["curl", "wget", "nc", "ssh", "scp"]) expect(s.permissions.deny).toContain(`Bash(${t} *)`);
   });
 
-  test("the Bash sandbox is on, cannot be switched off by the model, and has no network domain allowed (R-4; keys from the sandboxing docs)", () => {
-    expect(s.sandbox).toEqual({
-      enabled: true,
-      failIfUnavailable: true,
-      allowUnsandboxedCommands: false,
-      network: { allowedDomains: [], strictAllowlist: true },
-    });
+  // was: "the Bash sandbox is on, cannot be switched off by the model, and has no network domain allowed (R-4)". TASK-112 (owner 13:41 and 14:03): no sandbox key at all.
+  test("there is NO `sandbox` key: the Bash sandbox is not used (it needs socat/bubblewrap); the network tools stay denied by name instead", () => {
+    expect("sandbox" in s).toBe(false);
+    expect(JSON.stringify(s)).not.toContain("sandbox");
+    for (const t of ["curl", "wget", "nc", "ssh", "scp"]) expect(s.permissions.deny).toContain(`Bash(${t} *)`);
   });
 
   test("the three built-in plugins every hop loaded are switched OFF (R-5; TASK-C-035 item 2 (i))", () => {
@@ -79,7 +77,7 @@ describe("buildSettings (SPEC-C-003 § 2, R-1, R-4)", () => {
       "Bash(curl *)", "Bash(wget *)", "Bash(nc *)", "Bash(ssh *)", "Bash(scp *)",
       "Bash(find * -exec*)", "Bash(find * -execdir*)", "Bash(git diff --output*)",
     ]);
-    expect(Object.keys(s).sort()).toEqual(["enabledPlugins", "env", "hooks", "permissions", "sandbox"]);
+    expect(Object.keys(s).sort()).toEqual(["enabledPlugins", "env", "hooks", "permissions"]); // was with "sandbox" (TASK-112)
   });
 
   test("a hook path with a space is single-quoted so the shell runs one file", () => {
@@ -119,16 +117,15 @@ describe("withReadOnly — the per-hop settings for read-only folders (TASK-C-04
   test("no read-only folder: the base settings come back as they are", () => {
     expect(withReadOnly(base, [])).toEqual(base);
   });
-  test("each read-only folder gets Edit and Write denied (permission paths: // for absolute) and the sandbox's denyWrite — for Bash", () => {
+  test("each read-only folder gets Edit and Write denied (permission paths: // for absolute); no sandbox denyWrite any more (TASK-112)", () => {
     const s: any = withReadOnly(base, ["/Users/x/spec", "/srv/api"]);
     for (const d of ["Edit(//Users/x/spec/**)", "Write(//Users/x/spec/**)", "Edit(//srv/api/**)", "Write(//srv/api/**)"]) expect(s.permissions.deny).toContain(d);
-    expect(s.sandbox.filesystem.denyWrite).toEqual(["/Users/x/spec", "/srv/api"]);
+    expect("sandbox" in s).toBe(false);
   });
-  test("everything else stays: the original deny entries, the allow list, the sandbox flags, the hooks, the plugins and the env", () => {
+  test("everything else stays: the original deny entries, the allow list, the hooks, the plugins and the env", () => {
     const s: any = withReadOnly(base, ["/Users/x/spec"]);
     expect(s.permissions.deny.slice(0, base.permissions.deny.length)).toEqual(base.permissions.deny);
     expect(s.permissions.allow).toEqual(base.permissions.allow);
-    expect(s.sandbox).toMatchObject(base.sandbox);
     expect(s.hooks).toEqual(base.hooks);
     expect(s.enabledPlugins).toEqual(base.enabledPlugins);
     expect(s.env).toEqual(base.env);
@@ -140,7 +137,7 @@ describe("withReadOnly — the per-hop settings for read-only folders (TASK-C-04
   test("a trailing slash does not produce a double slash", () => {
     const s: any = withReadOnly(base, ["/Users/x/spec/"]);
     expect(s.permissions.deny).toContain("Edit(//Users/x/spec/**)");
-    expect(s.sandbox.filesystem.denyWrite).toEqual(["/Users/x/spec"]);
+    expect(s.permissions.deny).not.toContain("Edit(//Users/x/spec//**)");
   });
 });
 
@@ -149,14 +146,15 @@ describe("withReadGuard — the read fence of every hop (TASK-C-042 Part A, UP-3
   const before = JSON.stringify(base);
   const readable = ["/work/usb-oda", "/work/mc2-front", "/tmp/caw-runner-x/hop-1"];
 
-  test("the Bash sandbox: ~/ is denied for reads, and exactly the readable folders are re-allowed", () => {
+  // was: "the Bash sandbox: ~/ is denied for reads, and exactly the readable folders are re-allowed". TASK-112: the fence for Bash is the hook below, not sandbox keys.
+  test("no sandbox keys: the read fence for Bash is the hook, so withReadGuard adds `hooks` and nothing else", () => {
     const s: any = withReadGuard(base, readable);
-    expect(s.sandbox.filesystem.denyRead).toEqual(["~/"]);
-    expect(s.sandbox.filesystem.allowRead).toEqual(readable);
+    expect("sandbox" in s).toBe(false);
+    expect(Object.keys(s).sort()).toEqual(Object.keys(base).sort());
   });
-  test("the file tools: a PreToolUse hook on Read|Glob|Grep runs the guard with the readable folders as ONE argument (JSON), not through the environment", () => {
+  test("the file tools and Bash: a PreToolUse hook on Read|Glob|Grep|Bash runs the guard with the readable folders as ONE argument (JSON), not through the environment", () => {
     const s: any = withReadGuard(base, readable);
-    const m = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep");
+    const m = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep|Bash"); // TASK-112: Bash joined the matcher (was "Read|Glob|Grep")
     expect(m.hooks).toHaveLength(1);
     const cmd: string = m.hooks[0].command;
     expect(cmd.startsWith(`${process.execPath} `)).toBe(true);
@@ -172,24 +170,24 @@ describe("withReadGuard — the read fence of every hop (TASK-C-042 Part A, UP-3
     expect(s.hooks.PreToolUse.slice(0, base.hooks.PreToolUse.length)).toEqual(base.hooks.PreToolUse);
     expect(s.hooks.PreToolUse).toHaveLength(base.hooks.PreToolUse.length + 1);
   });
-  test("everything else is as it was; no `blockReadsOutsideWorkingDirectories` (it stalls claude, TASK-C-042); the sandbox stays ON", () => {
+  test("everything else is as it was; no `blockReadsOutsideWorkingDirectories` (it stalls claude, TASK-C-042); and still no sandbox", () => {
     const s: any = withReadGuard(base, readable);
     expect(s.permissions).toEqual(base.permissions);
     expect(s.permissions.blockReadsOutsideWorkingDirectories).toBeUndefined();
-    expect(s.sandbox).toMatchObject({ enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false });
+    expect(s.sandbox).toBeUndefined();
     expect(s.enabledPlugins).toEqual(base.enabledPlugins);
     expect(s.env).toEqual(base.env);
   });
-  test("it stacks with withReadOnly (denyWrite and denyRead sit side by side) and does not change the base", () => {
+  test("it stacks with withReadOnly (the Edit / Write denies and the guard hook sit side by side) and does not change the base", () => {
     const s: any = withReadGuard(withReadOnly(base, ["/work/spec"]), readable);
-    expect(s.sandbox.filesystem.denyWrite).toEqual(["/work/spec"]);
-    expect(s.sandbox.filesystem.denyRead).toEqual(["~/"]);
     expect(s.permissions.deny).toContain("Edit(//work/spec/**)");
+    expect(s.hooks.PreToolUse.some((h: any) => h.matcher === "Read|Glob|Grep|Bash")).toBe(true);
+    expect("sandbox" in s).toBe(false);
     expect(JSON.stringify(base)).toBe(before);
   });
   test("a readable folder with a space is single-quoted as part of the JSON argument", () => {
     const s: any = withReadGuard(base, ["/my work/app"]);
-    const cmd: string = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep").hooks[0].command;
+    const cmd: string = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep|Bash").hooks[0].command;
     expect(cmd.endsWith(`'["/my work/app"]'`)).toBe(true);
   });
 });
