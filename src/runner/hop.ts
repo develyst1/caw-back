@@ -90,7 +90,7 @@ const REFUSAL_CAP = 10;
 /** What was refused: one of our hook's codes, `guard` (a workspace guard hook), or `tool` (claude itself refused a tool in this step). `detail` is the path, program, character or tool named. */
 type RefusalKind = Code | "guard" | "tool";
 type Refusal = { kind: RefusalKind; detail: string };
-const CODES = "shell_feature|not_allowed|git_write|inline_code|network|outside|read_only";
+const CODES = "shell_feature|not_allowed|git_write|inline_code|network|outside|read_only|api";
 
 /** One stream block → what was refused. Our hook's stderr is `caw-refused <code>: <English with the detail in the FIRST double quotes>` (read-guard.ts; the file tools' `outside` line has the
  *  path unquoted: `read guard: <path> is outside …`). A hook block without that prefix is a workspace guard hook; a `permission` block is claude refusing a tool. */
@@ -111,14 +111,16 @@ export const REFUSAL_REASON: Record<RefusalKind, (detail: string) => string> = {
   git_write: () => "worker เขียน git ไม่ได้",
   network: () => "ออกเน็ตได้แค่ 127.0.0.1 กับที่ลงแพ็กเกจ",
   inline_code: () => "รันโค้ดจากบรรทัดคำสั่งไม่ได้ — เขียนเป็นไฟล์ก่อน",
+  api: () => "worker เรียก API ของ CAW หรือ Blueprint ตรง ๆ ไม่ได้ — ใช้เครื่องมือของ CAW แทน", // REQ-113 § User-facing wording, exactly
   guard: () => "กฎความปลอดภัยกันไว้",
   tool: (d) => `เครื่องมือ ${d} ใช้ในก้าวนี้ไม่ได้`,
 };
 
-/** The hop note's refusal part: each DISTINCT (kind, detail) as the PM's sentence, at most 3, then `(อีก n ครั้ง)` for the refusals those three do not cover; redacted like the rest of the note. */
+/** The hop note's refusal part: each DISTINCT reason as the PM's sentence (distinct as the reader sees it: `git commit` and `git push` are one sentence, two different paths are two), at most 3,
+ *  then `(อีก n ครั้ง)` for the refusals those three do not cover; redacted like the rest of the note. */
 export function refusedNote(list: readonly Refusal[]): string {
   if (list.length === 0) return "";
-  const key = (r: Refusal) => `${r.kind}\u0000${r.detail}`;
+  const key = (r: Refusal) => REFUSAL_REASON[r.kind](r.detail);
   const distinct = new Map<string, Refusal>();
   for (const r of list) if (!distinct.has(key(r))) distinct.set(key(r), r);
   const shown = [...distinct.values()].slice(0, 3);
@@ -326,7 +328,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
     const settingsFile = join(dir, "settings.json");
     const base = JSON.parse(readFileSync(deps.settingsFile, "utf8"));
-    writeFileSync(settingsFile, `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir), messageId === null ? readOnly : []), null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(settingsFile, `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir), messageId === null ? readOnly : [], messageId === null ? (config.serverPorts ?? []) : []), null, 2)}\n`, { mode: 0o600 });
     const args = buildArgs({ prompt, worker, roots: messageId !== null ? project.workspace.roots : roots, settingsFile, mcpFile, skillsFile, chat: messageId !== null });
 
     // A child must never be started by a runner that is already stopping: nothing would be left to kill it.

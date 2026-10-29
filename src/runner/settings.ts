@@ -68,10 +68,12 @@ export const READ_GUARD_SCRIPT = fileURLToPath(new URL("./read-guard.ts", import
  *  readable folders as its ONE argument. The key `permissions.blockReadsOutsideWorkingDirectories` would do it but stalls claude at start-up, and the Bash sandbox's
  *  `denyRead` is gone with the sandbox (owner 13:41), so for Bash the hook judges the command's words itself and fails closed (read-guard.ts).
  *  `readable` = the project's roots + the hop's private folder. Pure: the base is not changed. */
-export function withReadGuard(base: any, readable: readonly string[], readOnly: readonly string[] = []): any {
-  // the read-only folders are the hook's optional 2nd argument (SPEC-108 D3): only a Bash command that WRITES is judged against them; with none, the one-argument form is unchanged
-  const second = readOnly.length > 0 ? ` ${shellWord(JSON.stringify(readOnly))}` : "";
-  const hook = { matcher: "Read|Glob|Grep|Bash", hooks: [{ type: "command", command: `${shellWord(process.execPath)} ${shellWord(READ_GUARD_SCRIPT)} ${shellWord(JSON.stringify(readable))}${second}` }] };
+export function withReadGuard(base: any, readable: readonly string[], readOnly: readonly string[] = [], serverPorts: readonly string[] = []): any {
+  // the read-only folders are the hook's optional 2nd argument (SPEC-108 D3): only a Bash command that WRITES is judged against them. The `host:port` of I-Space's own servers are the optional
+  // 3rd (REQ-113): a command that reaches one is refused. Each is added only when non-empty, so the shorter forms are unchanged — and with ports but no read-only folders the 2nd is `[]`, to keep positions right.
+  const second = readOnly.length > 0 || serverPorts.length > 0 ? ` ${shellWord(JSON.stringify(readOnly))}` : "";
+  const third = serverPorts.length > 0 ? ` ${shellWord(JSON.stringify(serverPorts))}` : "";
+  const hook = { matcher: "Read|Glob|Grep|Bash", hooks: [{ type: "command", command: `${shellWord(process.execPath)} ${shellWord(READ_GUARD_SCRIPT)} ${shellWord(JSON.stringify(readable))}${second}${third}` }] };
   return {
     ...base,
     hooks: { ...base.hooks, PreToolUse: [...(base.hooks?.PreToolUse ?? []), hook] },

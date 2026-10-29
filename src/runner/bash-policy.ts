@@ -5,7 +5,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
-export type Code = "shell_feature" | "not_allowed" | "git_write" | "inline_code" | "network" | "outside" | "read_only";
+export type Code = "shell_feature" | "not_allowed" | "git_write" | "inline_code" | "network" | "outside" | "read_only" | "api";
 export type Refusal = { code: Code; detail: string };
 
 // ---------- paths (shared with read-guard.ts) ----------
@@ -159,21 +159,42 @@ const OUTPUT_OPTS: Record<"curl" | "wget", Set<string>> = {
 };
 /** options that can send a request somewhere we cannot judge (a config file, a proxy, a list of URLs, wget's `-e` wgetrc commands) */
 const NET_UNJUDGEABLE: Record<"curl" | "wget", (a: string) => boolean> = {
-  curl: (a) => a === "-K" || a === "--config" || a.startsWith("--config=") || a === "-x" || a === "--proxy" || a.startsWith("--proxy="),
-  wget: (a) => a === "-i" || a === "--input-file" || a.startsWith("--input-file=") || a === "-e" || a === "--execute" || a.startsWith("--execute=") || a === "-Y" || a === "--proxy" || a.startsWith("--proxy="),
+  // + `--connect-to` and `--resolve` (round 3): they make curl send a request written for :3900 to 127.0.0.1:4500, and the URL we judge is not where it goes. Also, as the same kind of "send it somewhere else":
+  // `--unix-socket` / `--abstract-unix-socket` (a local socket behind a `localhost` URL), `--socks4|4a|5|5-hostname`, `--preproxy`, `--doh-url`. Every form: separate value or `=value`.
+  curl: (a) => a === "-K" || a === "--config" || a.startsWith("--config=") || a === "-x" || a === "--proxy" || a.startsWith("--proxy=")
+    || /^--(connect-to|resolve|unix-socket|abstract-unix-socket|socks4|socks4a|socks5|socks5-hostname|preproxy|doh-url)(=|$)/.test(a),
+  // + `--config` (D7): a wgetrc can set any header, the same family as `-e`
+  wget: (a) => a === "-i" || a === "--input-file" || a.startsWith("--input-file=") || a === "-e" || a === "--execute" || a.startsWith("--execute=") || a === "-Y" || a === "--proxy" || a.startsWith("--proxy=") || a === "--config" || a.startsWith("--config="),
 };
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/** the host of a URL-ish word: without scheme, credentials, port, path */
-function hostOf(target: string): string {
-  let rest = target.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "");
-  rest = rest.split(/[/?#]/)[0]!;
+/** the host and port of a URL-ish word (no scheme, credentials or path); with no explicit port: 443 for https, else 80 */
+function endpointOf(target: string): { host: string; port: string; written: string | null } {
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(target)?.[1]?.toLowerCase();
+  let rest = target.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "").split(/[/?#]/)[0]!;
   rest = rest.slice(rest.lastIndexOf("@") + 1);
-  if (rest.startsWith("[")) { const end = rest.indexOf("]"); return end < 0 ? rest : rest.slice(0, end + 1); }
-  return rest.replace(/:\d*$/, "");
+  let host = rest;
+  let port = "";
+  if (rest.startsWith("[")) { const end = rest.indexOf("]"); if (end >= 0) { host = rest.slice(0, end + 1); port = rest.slice(end + 1).replace(/^:/, ""); } }
+  else { const m = /^(.*):(\d*)$/.exec(rest); if (m) { host = m[1]!; port = m[2]!; } }
+  // `written` = the port exactly as typed (null when there is none): D6 judges it before anything compares it
+  return { host, port: port === "" ? (scheme === "https" ? "443" : "80") : port, written: port === "" ? null : port };
 }
 
-type Ctx = { cwd: string; readable: string[]; readOnly: string[] };
+/** is `host:port` one of I-Space's own servers? The entries come from the runner's config (`host:port`); localhost, 127.0.0.1 and [::1] count as the same machine, so only the port is compared and only
+ *  for an entry that is itself local — a server on another machine is already refused as `network`. */
+function isOwnServer(ep: { host: string; port: string }, servers: readonly string[]): boolean {
+  // as NUMBERS (D6): curl reads `04500` as 4500, so comparing text would let it through; endpointOf's port is already known to be plain digits here
+  return servers.some((s) => { const i = s.lastIndexOf(":"); return i > 0 && LOCAL_HOSTS.has(s.slice(0, i)) && Number(s.slice(i + 1)) === Number(ep.port); });
+}
+
+/** D6: a port on a local host must be written plainly — `^[1-9][0-9]{0,4}$` and at most 65535. `04500`, `004500`, `0`, `99999` are refused (curl reads the first as 4500). null = fine */
+const plainPort = (written: string | null) => written === null || (/^[1-9][0-9]{0,4}$/.test(written) && Number(written) <= 65535);
+
+/** REQ-113: the identity headers of CAW's and Blueprint's APIs. A worker that sends one acts as the operator; it may not even type the name, whatever the program. */
+const IDENTITY_HEADERS: [RegExp, string][] = [[/x-caw-actor/i, "X-CAW-Actor"], [/x-blueprint-by/i, "X-Blueprint-By"]];
+
+type Ctx = { cwd: string; readable: string[]; readOnly: string[]; servers: string[] };
 
 /** one path against the folders: `outside` unless it lands in a readable folder; with `write`, `read_only` if it lands in a read-only one. `force` = it IS a path (a redirect target,
  *  a `-C` dir) even if it does not exist yet; otherwise only a word that looks like one is judged (starts with `/` or `~`, contains `..`, or exists relative to the cwd). */
@@ -230,7 +251,13 @@ function judgeNetwork(prog: "curl" | "wget", args: string[], ctx: Ctx): Refusal 
     const a = args[i]!;
     if (optionsDone || !a.startsWith("-")) { targets.push(a); continue; }
     if (a === "--") { optionsDone = true; continue; }
-    if (NET_UNJUDGEABLE[prog](a)) return { code: "network", detail: a };
+    if (NET_UNJUDGEABLE[prog](a)) return { code: "network", detail: a.startsWith("--") ? a.split("=")[0]! : a }; // the option's name, not its value
+    if (prog === "curl") {
+      // D7: a header (or a value) the check cannot read is refused — it could be X-CAW-Actor read from a file or built from the environment. A BODY from a file (`-d @f`) is fine.
+      if (/^-[A-Za-z]*H@/.test(a) || /^--(proxy-)?header=@/.test(a)) return { code: "api", detail: "header from a file" };      // -H@f · -sH@f · --header=@f
+      if ((a === "-H" || a === "--header" || a === "--proxy-header") && args[i + 1]?.startsWith("@")) return { code: "api", detail: "header from a file" }; // -H @f · --header @f
+      if (a === "--variable" || a.startsWith("--variable=") || a.startsWith("--expand-")) return { code: "api", detail: a.split("=")[0]! };       // values built from files / env
+    }
     if (a === "--url") { const u = args[++i]; if (u !== undefined) targets.push(u); continue; }
     if (VALUE_OPTS[prog].has(a)) {
       const v = args[++i];
@@ -240,7 +267,12 @@ function judgeNetwork(prog: "curl" | "wget", args: string[], ctx: Ctx): Refusal 
       if (p) return p;
     }
   }
-  for (const t of targets) if (!LOCAL_HOSTS.has(hostOf(t))) return { code: "network", detail: t };
+  for (const t of targets) {
+    const ep = endpointOf(t);
+    if (!LOCAL_HOSTS.has(ep.host)) return { code: "network", detail: t };
+    if (!plainPort(ep.written)) return { code: "api", detail: `unclear port "${ep.written}"` }; // D6: fail closed on a port we cannot read the way curl reads it
+    if (isOwnServer(ep, ctx.servers)) return { code: "api", detail: `${ep.host}:${ep.port}` }; // the machine itself is fine; I-Space's own servers on it are not (REQ-113)
+  }
   return null;
 }
 
@@ -283,13 +315,15 @@ function judgeCommand(cmd: Cmd, ctx: Ctx): Refusal | null {
 }
 
 /** null = the command may run; otherwise the first refusal. `readable` = the project's folders (+ the hop's own), `readOnly` ⊆ them. */
-export function judgeBash(command: string, cwd: string, readable: string[], readOnly: string[]): null | Refusal {
+export function judgeBash(command: string, cwd: string, readable: string[], readOnly: string[], serverPorts: string[] = []): null | Refusal {
   const toks = tokenize(command);
   if (!Array.isArray(toks)) return toks;
   const cmds = commandsOf(toks);
   if (!Array.isArray(cmds)) return cmds;
   if (cmds.length === 0) return { code: "not_allowed", detail: "" };
-  const ctx: Ctx = { cwd, readable: readable.map((d) => realOf(d)), readOnly: readOnly.map((d) => realOf(d)) };
+  // REQ-113: before anything else, any word (quotes already taken off) that names an identity header is refused, for any program — `curl -H X-CAW-Actor:operator …`, `-HX-CAW-Actor:…`, even `echo x-caw-actor`
+  for (const c of cmds) for (const w of [...c.words, ...c.redirs.map((r) => r.target)]) for (const [re, name] of IDENTITY_HEADERS) if (re.test(w)) return { code: "api", detail: name };
+  const ctx: Ctx = { cwd, readable: readable.map((d) => realOf(d)), readOnly: readOnly.map((d) => realOf(d)), servers: serverPorts };
   for (const c of cmds) { const r = judgeCommand(c, ctx); if (r) return r; }
   return null;
 }

@@ -50,6 +50,43 @@ describe("loadConfig", () => {
     expect(() => load(env({ RUNNER_HOP_MAX_MS: "0" }), allHooks)).toThrow(/RUNNER_HOP_MAX_MS/);
   });
 
+  // ---- REQ-113 / TASK-125: serverPorts = the servers a worker must never reach ----
+  test("serverPorts — defaults: CAW's API 4500, Blueprint 4200, Blueprint web 3100, caw-front 3500 (no variable for that one)", () => {
+    const c = load(env(), allHooks);
+    expect([...c.serverPorts!].sort()).toEqual(["127.0.0.1:3100", "127.0.0.1:3500", "127.0.0.1:4200", "127.0.0.1:4500"]);
+    // an EMPTY value (a blank .env line) falls back to the default, like every other variable here
+    expect([...load(env({ CAW_API_URL: "", BLUEPRINT_URL: "", BLUEPRINT_WEB_URL: "" }), allHooks).serverPorts!].sort()).toEqual([...c.serverPorts!].sort());
+  });
+  test("serverPorts — overrides are taken (host:port of each URL); a URL with no port gets 80 / 443 by scheme; duplicates collapse", () => {
+    const c = load(env({ CAW_API_URL: "http://127.0.0.1:4530", BLUEPRINT_URL: "http://10.0.0.5:8080/api", BLUEPRINT_WEB_URL: "https://web.example.com" }), allHooks);
+    expect([...c.serverPorts!].sort()).toEqual(["10.0.0.5:8080", "127.0.0.1:3500", "127.0.0.1:4530", "web.example.com:443"]);
+    expect(load(env({ BLUEPRINT_URL: "http://localhost" }), allHooks).serverPorts).toContain("localhost:80");
+    const same = load(env({ CAW_API_URL: "http://127.0.0.1:3500", BLUEPRINT_URL: "http://127.0.0.1:3500" }), allHooks).serverPorts!;
+    expect(same.filter((p) => p === "127.0.0.1:3500")).toHaveLength(1);
+    expect(load(env({ BLUEPRINT_URL: "http://[::1]:4200" }), allHooks).serverPorts).toContain("[::1]:4200");
+  });
+  test("serverPorts — a value that is not a URL is skipped with ONE warning that names the variable (never the value), and the runner still starts", () => {
+    const warned: string[] = [];
+    const c = loadConfig(env({ BLUEPRINT_URL: "secret-not-a-url", BLUEPRINT_WEB_URL: "localhost:3100" }), allHooks, () => true, (l) => warned.push(l));
+    expect(warned).toHaveLength(2);
+    expect(warned[0]).toContain("BLUEPRINT_URL");
+    expect(warned[1]).toContain("BLUEPRINT_WEB_URL");
+    for (const w of warned) { expect(w).not.toContain("secret-not-a-url"); expect(w).not.toContain("\n"); }
+    expect([...c.serverPorts!].sort()).toEqual(["127.0.0.1:3500", "127.0.0.1:4500"]); // the two good ones survive
+    // the same for the API URL itself, and a credential in a good URL is not echoed anywhere
+    const w2: string[] = [];
+    const d = loadConfig(env({ CAW_API_URL: "nonsense", BLUEPRINT_URL: "http://u:pw99@host:9/x" }), allHooks, () => true, (l) => w2.push(l));
+    expect(w2).toHaveLength(1);
+    expect(w2[0]).toContain("CAW_API_URL");
+    expect(JSON.stringify([w2, d.serverPorts])).not.toContain("pw99");
+    expect(d.serverPorts).toContain("host:9");
+  });
+  test("serverPorts — the hook paths and every other field are as before", () => {
+    const c = load(env(), allHooks);
+    expect(c.hooks).toEqual(HOOKS.map((h) => `${ROOT}/scripts/hooks/${h}`));
+    expect(c.apiUrl).toBe("http://127.0.0.1:4500");
+  });
+
   test("the error is ONE line (what main prints before exit 1)", () => {
     try { load({}, allHooks); } catch (e) { expect((e as Error).message).not.toContain("\n"); return; }
     throw new Error("did not throw");

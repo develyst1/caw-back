@@ -189,6 +189,19 @@ describe("guard — Bash: anything that reaches outside, or that it cannot judge
     expect(runGuardCli([JSON.stringify(dirs)], JSON.stringify({ tool_name: "Bash", tool_input: { command: "  " }, cwd: root })).stderr).toStartWith("caw-refused not_allowed: ");
     for (const r of [runGuardCli([], "{}"), runGuardCli(["not json"], "{}"), runGuardCli(["[]"], "{}"), runGuardCli([JSON.stringify(dirs)], "not json")]) expect([r.code, r.stderr.startsWith("caw-refused outside: read guard: ")]).toEqual([2, true]);
   });
+  test("the optional 3rd argument = I-Space's own servers (host:port): a command that reaches one → `caw-refused api:`; missing → none; not a JSON list of strings → refused (REQ-113)", () => {
+    const run = (command: string, third?: string) => runGuardCli(third === undefined ? [JSON.stringify(dirs), "[]"] : [JSON.stringify(dirs), "[]", third], JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: root }));
+    const call = "curl -s http://127.0.0.1:4500/v1/projects";
+    expect(run(call)).toEqual({ code: 0, stderr: "" });                                           // no 3rd argument: nothing is ours
+    expect(run(call, "[]")).toEqual({ code: 0, stderr: "" });
+    const r = run(call, JSON.stringify(["127.0.0.1:4500"]));
+    expect([r.code, r.stderr.startsWith('caw-refused api: "127.0.0.1:4500" ')]).toEqual([2, true]);
+    expect(r.stderr).not.toContain("\n");
+    expect(run("curl -s http://127.0.0.1:3900/", JSON.stringify(["127.0.0.1:4500"]))).toEqual({ code: 0, stderr: "" });
+    expect(run("echo x-caw-actor", "[]").stderr).toStartWith('caw-refused api: "X-CAW-Actor" ');   // the header words are refused with or without the ports
+    // the 3rd argument also works without a 2nd one that has content: `[]` keeps the positions
+    for (const bad of ["not json", '"127.0.0.1:4500"', "[1]", '[""]', "{}"]) { const b = run(call, bad); expect([bad, b.code, b.stderr.startsWith("caw-refused outside: read guard: ")]).toEqual([bad, 2, true]); }
+  });
   test("the optional 2nd argument = the read-only folders: a Bash write there → `read_only`; reading there is fine; missing → none; not a JSON list of strings → refused", () => {
     const ro = join(root, "src");
     const run = (command: string, second?: string) => runGuardCli(second === undefined ? [JSON.stringify(dirs)] : [JSON.stringify(dirs), second], JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd: root }));

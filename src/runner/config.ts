@@ -11,6 +11,8 @@ export type RunnerConfig = {
   apiUrl: string; pollMs: number; hopMaxMs: number; claudeBin: string; workspaceRoot: string;
   /** absolute paths of HOOKS under <workspaceRoot>/scripts/hooks, same order */
   hooks: string[];
+  /** `host:port` of I-Space's own servers (REQ-113): a worker's command must never reach them. Optional so a config built by hand (tests) need not carry it; hop.ts reads it as `?? []`. */
+  serverPorts?: string[];
 };
 
 export class ConfigError extends Error {}
@@ -23,10 +25,31 @@ const positive = (name: string, raw: string): number => {
   return n;
 };
 
+/** `host:port` of a URL (port from the scheme when it has none: 80 / 443); null = not a URL we can read a host and port from. The raw value is never echoed — a URL can carry a password. */
+export function hostPort(raw: string): string | null {
+  let u: URL;
+  try { u = new URL(raw); } catch { return null; }
+  const port = u.port || (u.protocol === "https:" ? "443" : u.protocol === "http:" ? "80" : "");
+  return u.hostname === "" || port === "" ? null : `${u.hostname}:${port}`;
+}
+
+/** The servers a worker must never talk to (REQ-113): CAW's API (the runner's own `apiUrl`), Blueprint's API and web, and caw-front's default port (it has no variable). Each from its
+ *  variable or its default; a value that is not a URL is skipped with one warning that names the VARIABLE only. Never throws. */
+export function serverPortsOf(env: Env, apiUrl: string, warn: (line: string) => void): string[] {
+  const out = new Set<string>(["127.0.0.1:3500"]);
+  for (const [name, raw] of [["CAW_API_URL", apiUrl], ["BLUEPRINT_URL", env.BLUEPRINT_URL || "http://127.0.0.1:4200"], ["BLUEPRINT_WEB_URL", env.BLUEPRINT_WEB_URL || "http://127.0.0.1:3100"]] as const) {
+    const hp = hostPort(raw);
+    if (hp === null) warn(`${name} is not a URL (host and port) — it is not in the list of servers a worker may not reach`);
+    else out.add(hp);
+  }
+  return [...out];
+}
+
 /** `||`, not `??`, for every default: Bun loads `.env`, and a blank `X=` line arrives as "". */
 const canExecute = (path: string) => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } };
 
-export function loadConfig(env: Env = process.env, fileExists: (path: string) => boolean = existsSync, isExecutable: (path: string) => boolean = canExecute): RunnerConfig {
+export function loadConfig(env: Env = process.env, fileExists: (path: string) => boolean = existsSync, isExecutable: (path: string) => boolean = canExecute,
+  warn: (line: string) => void = (line) => console.error(`runner: ${line}`)): RunnerConfig {
   const root = (env.CAW_WORKSPACE_ROOT || "").replace(/\/+$/, "");
   if (root === "") throw new ConfigError("CAW_WORKSPACE_ROOT is not set: the absolute path of ai-agent-workspace (the guard hooks and skills are read from it)");
   if (!isAbsolute(root)) throw new ConfigError(`CAW_WORKSPACE_ROOT must be an absolute path, got "${root}"`);
@@ -38,8 +61,10 @@ export function loadConfig(env: Env = process.env, fileExists: (path: string) =>
   }
 
   const bin = env.CLAUDE_BIN || `${homedir()}/.local/bin/claude`;
+  const apiUrl = env.CAW_API_URL || "http://127.0.0.1:4500";
   return {
-    apiUrl: env.CAW_API_URL || "http://127.0.0.1:4500",
+    apiUrl,
+    serverPorts: serverPortsOf(env, apiUrl, warn),
     pollMs: positive("RUNNER_POLL_MS", env.RUNNER_POLL_MS || "2000"),
     hopMaxMs: positive("RUNNER_HOP_MAX_MS", env.RUNNER_HOP_MAX_MS || "1200000"),
     claudeBin: bin.startsWith("~/") ? `${homedir()}${bin.slice(1)}` : bin,

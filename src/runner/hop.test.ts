@@ -1004,6 +1004,33 @@ describe("refusals never end a hop; the 10th one does; the note names the real r
     expect(await one(permissionDeny(1, "WebFetch"))).toBe(SENTENCE("เครื่องมือ WebFetch ใช้ในก้าวนี้ไม่ได้"));
   });
 
+  // REQ-113 / TASK-125
+  test("a `caw-refused api:` block (a worker reaching I-Space's own servers, or typing an identity header) → the PM's sentence, exactly; the hop goes on and ends `commented`", async () => {
+    const SAYS = "worker เรียก API ของ CAW หรือ Blueprint ตรง ๆ ไม่ได้ — ใช้เครื่องมือของ CAW แทน";
+    const server = hookRefusal(1, "curl http://127.0.0.1:4500/v1/projects", 'caw-refused api: "127.0.0.1:4500" is one of I-Space\'s own servers — a worker acts on CAW only through its MCP tools');
+    const header = hookRefusal(2, "curl -H 'X-CAW-Actor: operator' http://127.0.0.1:3900/", 'caw-refused api: "X-CAW-Actor" is one of I-Space\'s own servers — a worker acts on CAW only through its MCP tools');
+    const { h, child } = await run([...server, ...header, ...fixture("ok")]);
+    expect(child.killed).toBe(false);
+    expect(h.outcome).toBe("commented");
+    expect(h.note).toBe(SENTENCE(SAYS)); // two refusals, one sentence: the reason does not name the detail, so they collapse
+    expect(refusalOf({ kind: "hook", tool: "Bash", text: `PreToolUse:Bash hook error: [x]: caw-refused api: "127.0.0.1:4500" is one of …` })).toEqual({ kind: "api", detail: "127.0.0.1:4500" });
+  });
+  test("the hop gives the hook the servers' host:port from its config (card hop), as the 3rd argument with `[]` as the 2nd; a hop without config.serverPorts gives none", async () => {
+    const hookCmd = async (ports: string[] | undefined) => {
+      const w = await world();
+      w.deps.config = { ...w.deps.config, serverPorts: ports };
+      let seen = "";
+      w.set(() => { const cmd = w.spawned[w.spawned.length - 1]!.cmd; const s = JSON.parse(readFileSync(cmd[cmd.indexOf("--settings") + 1]!, "utf8")); seen = s.hooks.PreToolUse.find((x: any) => x.matcher === "Read|Glob|Grep|Bash").hooks[0].command; return fakeChild({ lines: fixture("ok") }); });
+      await runHop(w.deps, await w.input());
+      return seen;
+    };
+    const ports = ["127.0.0.1:4500", "127.0.0.1:4200", "127.0.0.1:3100", "127.0.0.1:3500"];
+    const withPorts = await hookCmd(ports);
+    expect(withPorts.endsWith(` '[]' '${JSON.stringify(ports)}'`)).toBe(true);
+    const without = await hookCmd(undefined);
+    expect(without).not.toContain("127.0.0.1");
+    expect(without.endsWith("]'")).toBe(true); // the one-argument form
+  });
   test("a file-tool refusal by the read guard (`caw-refused outside: read guard: <path> is outside …`, the path unquoted) → the path is named", async () => {
     const lines = [toolUse("t1", "Read", { file_path: "/etc/hosts" }), JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true,
       content: "PreToolUse:Read hook error: [/x/read-guard.ts '[\"/r\"]']: caw-refused outside: read guard: /etc/hosts is outside the project's folders — a worker reads only inside them" }] } })];
@@ -1085,6 +1112,13 @@ describe("refusalOf and refusedNote on their own", () => {
     expect(refusalOf({ kind: "hook", tool: "Read", text: "PreToolUse:Read hook error: [x]: read guard: /a is outside the project's folders" })).toEqual({ kind: "guard", detail: "" });
     expect(refusalOf({ kind: "permission", tool: "WebSearch", text: "permission denied" })).toEqual({ kind: "tool", detail: "WebSearch" });
     expect(refusalOf({ kind: "hook", tool: "Bash", text: text("caw-refused made_up_code: x") })).toEqual({ kind: "guard", detail: "" }); // an unknown code is not trusted
+  });
+  test("refusedNote: distinct as the reader sees it — `git commit` and `git push` are ONE sentence; two different paths are two; the uncovered count follows the sentences, not the details", () => {
+    const g = (detail: string) => ({ kind: "git_write" as const, detail });
+    expect(refusedNote([g("commit"), g("push"), g("branch")])).toBe(SENTENCE("worker เขียน git ไม่ได้"));
+    expect(refusedNote([{ kind: "outside", detail: "/a" }, { kind: "outside", detail: "/b" }])).toBe([SENTENCE("/a อยู่นอกโฟลเดอร์งาน"), SENTENCE("/b อยู่นอกโฟลเดอร์งาน")].join(" · "));
+    const four = [g("x"), { kind: "outside" as const, detail: "/a" }, { kind: "outside" as const, detail: "/b" }, { kind: "outside" as const, detail: "/c" }, { kind: "outside" as const, detail: "/d" }, g("y")];
+    expect(refusedNote(four).endsWith(" · (อีก 2 ครั้ง)")).toBe(true); // shown: git, /a, /b → not covered: /c and /d
   });
   test("refusedNote: empty list → empty; redacts what it prints", () => {
     expect(refusedNote([])).toBe("");

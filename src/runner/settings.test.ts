@@ -199,6 +199,16 @@ describe("withReadGuard — the read fence of every hop (TASK-C-042 Part A, UP-3
     expect(some).toBe(`${none} '${JSON.stringify(["/work/spec", "/my ro/dir"])}'`);
     expect(some).not.toContain("$");
   });
+  test("the servers' host:port are the hook's optional 3rd argument, added only when there are some; with ports but no read-only folders the 2nd is `[]` so the positions stay right (REQ-113)", () => {
+    const hookCmd = (s: any): string => s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep|Bash").hooks[0].command;
+    const base1 = hookCmd(withReadGuard(base, readable));
+    const ports = ["127.0.0.1:4500", "127.0.0.1:4200"];
+    expect(hookCmd(withReadGuard(base, readable, [], []))).toBe(base1);                          // none: byte-for-byte as before
+    expect(hookCmd(withReadGuard(base, readable, ["/work/spec"], []))).toBe(`${base1} '["/work/spec"]'`); // only the 2nd, as in TASK-118
+    expect(hookCmd(withReadGuard(base, readable, [], ports))).toBe(`${base1} '[]' '${JSON.stringify(ports)}'`);
+    expect(hookCmd(withReadGuard(base, readable, ["/work/spec"], ports))).toBe(`${base1} '["/work/spec"]' '${JSON.stringify(ports)}'`);
+    expect(hookCmd(withReadGuard(base, readable, [], ports))).not.toContain("$");
+  });
   test("a readable folder with a space is single-quoted as part of the JSON argument", () => {
     const s: any = withReadGuard(base, ["/my work/app"]);
     const cmd: string = s.hooks.PreToolUse.find((h: any) => h.matcher === "Read|Glob|Grep|Bash").hooks[0].command;

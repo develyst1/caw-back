@@ -3,7 +3,7 @@
 // call names must resolve, by REAL path, to a readable folder (the project's roots + the hop's private folder), or the hook exits 2 with a one-line reason and the tool is refused.
 // Bash is judged by bash-policy.ts (SPEC-108): what a worker may run, in which folders. It FAILS CLOSED.
 // Every refusal line starts `caw-refused <code>: ` (SPEC-108 D3) — hop.ts reads the code and the quoted detail back out of the stream to write the hop's note.
-//   usage (as a hook):   bun read-guard.ts '<JSON list of readable dirs>' ['<JSON list of read-only dirs>']   with the hook's JSON on stdin
+//   usage (as a hook):   bun read-guard.ts '<JSON list of readable dirs>' ['<JSON list of read-only dirs>' ['<JSON list of host:port of I-Space's own servers>']]   with the hook's JSON on stdin
 import { isAbsolute } from "node:path";
 import { type Code, type Refusal, absolute, inside, judgeBash, realOf } from "./bash-policy";
 
@@ -40,11 +40,12 @@ const ENGLISH: Record<Code, (detail: string) => string> = {
   network: (d) => `"${d}" reaches the network — only 127.0.0.1, localhost and [::1] are allowed (and the package registry for bun install / add)`,
   outside: (d) => `"${d}" is outside the project's folders — a worker reads only inside them`,
   read_only: (d) => `"${d}" is in a read-only folder — a worker cannot write there`,
+  api: (d) => `"${d}" is one of I-Space's own servers — a worker acts on CAW only through its MCP tools`,
 };
 const line = (r: Refusal) => `caw-refused ${r.code}: ${ENGLISH[r.code](r.detail.replace(/"/g, "'"))}`;
 
 /** null = allowed; otherwise the one-line reason (`caw-refused <code>: …`) and the tool is refused. `readOnly` = folders (⊆ readable) a Bash command may not write to. */
-export function guard(payload: Payload, readable: readonly string[], readOnly: readonly string[] = []): string | null {
+export function guard(payload: Payload, readable: readonly string[], readOnly: readonly string[] = [], serverPorts: readonly string[] = []): string | null {
   const outside = (m: string) => `caw-refused outside: read guard: ${m}`;
   if (!payload || typeof payload !== "object") return outside("the hook payload is not an object — refused");
   const tool = String(payload.tool_name ?? "");
@@ -52,7 +53,7 @@ export function guard(payload: Payload, readable: readonly string[], readOnly: r
   if (tool === "Bash") {
     const command = payload.tool_input?.command;
     if (typeof command !== "string" || command.trim() === "") return "caw-refused not_allowed: Bash names no command — send one command";
-    const r = judgeBash(command, cwd, [...readable], [...readOnly]);
+    const r = judgeBash(command, cwd, [...readable], [...readOnly], [...serverPorts]);
     return r === null ? null : line(r);
   }
   const paths = pathsOf(tool, payload.tool_input ?? {}, cwd);
@@ -80,9 +81,15 @@ export function runGuardCli(args: readonly string[], stdin: string): { code: num
     if (ro === null) return refuse("the read-only-folders argument is not a JSON list of folders — refused");
     readOnly = ro;
   }
+  let serverPorts: string[] = [];
+  if (args[2] !== undefined) {
+    const sp = list(args[2]);
+    if (sp === null) return refuse("the server-ports argument is not a JSON list of host:port strings — refused");
+    serverPorts = sp;
+  }
   let payload: Payload;
   try { payload = JSON.parse(stdin); } catch { return refuse("the hook input is not JSON — refused"); }
-  const why = guard(payload, readable, readOnly);
+  const why = guard(payload, readable, readOnly, serverPorts);
   return why === null ? { code: 0, stderr: "" } : { code: 2, stderr: why };
 }
 

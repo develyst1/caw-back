@@ -221,6 +221,121 @@ describe("F3: an unquoted glob segment starting with `.` could expand to `..`", 
   });
 });
 
+// ---- REQ-113 / TASK-125: a worker never reaches I-Space's own servers and never types an identity header ----
+describe("api: I-Space's own servers and identity headers (REQ-113)", () => {
+  const PORTS = ["127.0.0.1:4500", "127.0.0.1:4200", "127.0.0.1:3100", "127.0.0.1:3500"];
+  const withPorts = (c: string, ports = PORTS) => judgeBash(c, root, readable, readOnly, ports);
+  const api = (c: string, detail: string, ports = PORTS) => { const r = withPorts(c, ports); expect([c, r?.code, r?.detail]).toEqual([c, "api", detail]); };
+  const fine = (c: string, ports = PORTS) => expect([c, withPorts(c, ports)]).toEqual([c, null]);
+
+  test("TEST-108 Q1's four calls (CAW mode/budget, proposal accept, workspace roots, Blueprint versions) → api, the detail is the header name", () => {
+    api(`curl -X PATCH -H 'X-CAW-Actor: operator' http://127.0.0.1:4500/v1/projects/P/mode -d '{"mode":"dispatcher","hopBudget":999}'`, "X-CAW-Actor");
+    api("curl -X POST -H 'X-CAW-Actor: operator' http://127.0.0.1:4500/v1/proposals/X/accept", "X-CAW-Actor");
+    api(`curl -X PATCH -H 'X-CAW-Actor: operator' http://127.0.0.1:4500/v1/projects/P/workspace -d '{"roots":["/x"]}'`, "X-CAW-Actor");
+    api("curl -X POST -H 'X-Blueprint-By: worker' http://127.0.0.1:4200/v1/projects/P/versions", "X-Blueprint-By");
+  });
+  test("the same calls through localhost, [::1] and with no scheme, and with the header spelled any way → api", () => {
+    for (const host of ["http://localhost:4500", "http://[::1]:4500", "localhost:4500", "127.0.0.1:4500", "http://127.0.0.1:4500"]) api(`curl -X POST -H 'X-CAW-Actor: operator' ${host}/v1/proposals/X/accept`, "X-CAW-Actor");
+    api("curl -X POST -H 'x-caw-actor: operator' http://127.0.0.1:4500/v1/x", "X-CAW-Actor");     // lowercase
+    api("curl -X POST -H 'X-CAW-ACTOR: operator' http://127.0.0.1:4500/v1/x", "X-CAW-Actor");     // upper
+    api("curl -HX-CAW-Actor:operator http://127.0.0.1:4500/v1/x", "X-CAW-Actor");                 // -H glued to the value, no space
+    api("curl --header 'X-Blueprint-By: x' http://127.0.0.1:4200/", "X-Blueprint-By");
+    api("wget --header='X-Blueprint-By: x' http://127.0.0.1:4200/v1/projects", "X-Blueprint-By");
+    api(`curl -H "X-CAW-Actor: worker:1" http://127.0.0.1:4500/v1/x`, "X-CAW-Actor");
+  });
+  test("a call to one of the servers' ports with NO header at all → api, the detail is host:port (a read of the API is a way around the MCP tools too)", () => {
+    api("curl -s http://127.0.0.1:4500/v1/projects", "127.0.0.1:4500");
+    api("curl -s http://localhost:4200/v1/projects", "localhost:4200");
+    api("curl http://[::1]:3100/", "[::1]:3100");
+    api("curl localhost:3500", "localhost:3500");
+    api("wget -q http://127.0.0.1:4500/health", "127.0.0.1:4500");
+    api("curl -s -o out.json http://127.0.0.1:4500/v1/projects", "127.0.0.1:4500");
+  });
+  test("the port defaults by scheme: 80 with no scheme or http, 443 with https", () => {
+    api("curl http://localhost/x", "localhost:80", ["127.0.0.1:80"]);
+    api("curl localhost", "localhost:80", ["127.0.0.1:80"]);
+    api("curl https://127.0.0.1/x", "127.0.0.1:443", ["127.0.0.1:443"]);
+    fine("curl https://127.0.0.1:8443/x", ["127.0.0.1:443"]);
+    fine("curl http://localhost/x", ["127.0.0.1:443"]);
+  });
+  test("other local ports are still fine: curl http://127.0.0.1:3900/ · curl http://localhost:5173 · wget http://127.0.0.1:8080/", () => {
+    fine("curl -s http://127.0.0.1:3900/"); fine("curl http://localhost:5173"); fine("wget -q http://127.0.0.1:8080/index.html"); fine("curl http://[::1]:9000/");
+  });
+  test("a port is only 'ours' on the local machine: another host on port 4500 is `network`, not `api`", () => {
+    const r = withPorts("curl http://example.com:4500/");
+    expect([r?.code, r?.detail]).toEqual(["network", "http://example.com:4500/"]);
+  });
+  test("with no ports given the headerless call is not caught (the default is none) — the header words still are", () => {
+    expect(judgeBash("curl -s http://127.0.0.1:4500/v1/projects", root, readable, readOnly)).toBeNull();
+    expect(judgeBash("curl -H 'X-CAW-Actor: operator' http://127.0.0.1:3900/", root, readable, readOnly)?.code).toBe("api");
+  });
+  test("ANY program: the header name in any word → api — `echo x-caw-actor`, `grep -rn x-blueprint-by src`, `cat x-caw-actor.txt`", () => {
+    api("echo x-caw-actor", "X-CAW-Actor"); api("grep -rn x-blueprint-by src", "X-Blueprint-By"); api("cat x-caw-actor.txt", "X-CAW-Actor"); api("ls && echo X-Blueprint-By", "X-Blueprint-By");
+    api("echo 'say X-CAW-Actor'", "X-CAW-Actor");
+  });
+  test("the header check runs before the rest: a refused program with the name still says api", () => {
+    api("docker run -e 'X-CAW-Actor=operator' x", "X-CAW-Actor");
+  });
+
+  // ---- round 2: TEST-109 DEF-1 (SPEC-110 D6, D7) — every line below was `allow` on the round-1 tree ----
+  test("D6: a local port must be written plainly — `04500`, `004500`, `0`, `99999`, `65536` → api `unclear port \"…\"`, with the port as written; curl reads 04500 as 4500", () => {
+    api("curl -X POST http://127.0.0.1:04500/v1/proposals/X/accept", `unclear port "04500"`);
+    expect(withPorts("curl -H @h.txt http://127.0.0.1:04500/v1/proposals/X/accept")?.code).toBe("api"); // QA's DEF-1 line itself: refused either way (the options are read first → "header from a file")
+    api("curl http://127.0.0.1:004500/", `unclear port "004500"`);
+    api("curl http://127.0.0.1:99999/", `unclear port "99999"`);
+    api("curl http://127.0.0.1:65536/", `unclear port "65536"`);
+    api("curl http://localhost:0/", `unclear port "0"`);
+    api("curl http://[::1]:04500/", `unclear port "04500"`);
+    api("wget http://127.0.0.1:04200/", `unclear port "04200"`);
+    api("curl 127.0.0.1:04500/health", `unclear port "04500"`);                     // no scheme
+    api("curl http://127.0.0.1:065535/", `unclear port "065535"`);
+  });
+  test("D6: the edges that are fine — 1, 65535, 3900 written plainly are judged by number as before; `0x1194` is not a port at all (it is `network`)", () => {
+    fine("curl http://127.0.0.1:1/"); fine("curl http://127.0.0.1:65535/"); fine("curl http://127.0.0.1:3900/");
+    api("curl http://127.0.0.1:4500/", "127.0.0.1:4500");
+    expect(withPorts("curl http://127.0.0.1:0x1194/")?.code).toBe("network");
+  });
+  test("D6: the compare is numeric against the config's ports — a server written `4500` in the config matches `4500` typed, whichever local name is used", () => {
+    api("curl http://localhost:4500/", "localhost:4500", ["127.0.0.1:4500"]);
+    api("curl http://[::1]:4500/", "[::1]:4500", ["localhost:4500"]);
+    fine("curl http://localhost:4501/", ["127.0.0.1:4500"]);
+  });
+  test("D7: a curl header read from a file → api `header from a file` — `-H @f`, `-H@f`, `-sH@f`, `--header @f`, `--header=@f`, `--proxy-header @f`", () => {
+    for (const c of ["curl -H @h.txt http://127.0.0.1:3900/", "curl -H@h.txt http://127.0.0.1:3900/", "curl -sH@h.txt http://127.0.0.1:3900/", "curl --header @h.txt http://127.0.0.1:3900/",
+      "curl --header=@h.txt http://127.0.0.1:3900/", "curl --proxy-header @h.txt http://127.0.0.1:3900/", "curl -s -H @h.txt http://127.0.0.1:3900/"]) api(c, "header from a file");
+  });
+  test("D7: curl `--variable` and `--expand-*` build values from files or the environment → api; wget `--config` / `--config=` → network (a wgetrc can set any header)", () => {
+    api("curl --variable x@h.txt http://127.0.0.1:3900/", "--variable"); api("curl --variable=x@h.txt http://127.0.0.1:3900/", "--variable");
+    api("curl --expand-header '{{x}}' http://127.0.0.1:3900/", "--expand-header"); api("curl --expand-url '{{u}}' http://127.0.0.1:3900/", "--expand-url");
+    for (const c of ["wget --config=w.rc http://127.0.0.1:3900/", "wget --config w.rc http://127.0.0.1:3900/"]) expect([c, withPorts(c)?.code]).toEqual([c, "network"]);
+  });
+  // ---- round 3: curl can be told to send a request somewhere other than its URL says ----
+  test("round 3: curl --connect-to and --resolve, every form → network, the detail is the OPTION NAME (deliberate, not 'the value read as a URL by accident')", () => {
+    for (const c of ["curl --connect-to=::127.0.0.1:4500 http://localhost:3900/", "curl --connect-to ::127.0.0.1:4500 http://localhost:3900/", "curl --resolve x:80:127.0.0.1 http://x:4500/",
+      "curl --resolve=x:4500:127.0.0.1 http://x:4500/", "curl --connect-to=localhost:3900:127.0.0.1:4500 http://localhost:3900/", "curl -s --connect-to ::localhost:4200 http://127.0.0.1:3900/"]) {
+      const r = withPorts(c);
+      expect([c, r?.code, r?.detail]).toEqual([c, "network", c.includes("--connect-to") ? "--connect-to" : "--resolve"]);
+    }
+  });
+  test("round 3: the same kind of 'send it somewhere else' — --unix-socket, --abstract-unix-socket, --socks4/4a/5/5-hostname, --preproxy, --doh-url → network, detail = the option name", () => {
+    for (const [c, d] of [["curl --unix-socket /run/x.sock http://localhost/", "--unix-socket"], ["curl --unix-socket=/run/x.sock http://localhost/", "--unix-socket"], ["curl --abstract-unix-socket x http://localhost/", "--abstract-unix-socket"],
+      ["curl --socks5 127.0.0.1:9 http://127.0.0.1:3900/", "--socks5"], ["curl --socks5-hostname=h:9 http://127.0.0.1:3900/", "--socks5-hostname"], ["curl --socks4a h:9 http://127.0.0.1:3900/", "--socks4a"],
+      ["curl --preproxy h:9 http://127.0.0.1:3900/", "--preproxy"], ["curl --doh-url https://d.example/dns http://127.0.0.1:3900/", "--doh-url"], ["curl --proxy=http://p:1 http://127.0.0.1:3900/", "--proxy"], ["curl --config=c.cfg http://127.0.0.1:3900/", "--config"]] as const) {
+      const r = withPorts(c);
+      expect([c, r?.code, r?.detail]).toEqual([c, "network", d]);
+    }
+  });
+  test("round 3: options that only LOOK similar stay fine — --connect-timeout, --resolve-free calls, --max-time, --location, --insecure", () => {
+    fine("curl --connect-timeout 5 http://127.0.0.1:3900/"); fine("curl --max-time 3 -sS http://localhost:3900/"); fine("curl -sL http://127.0.0.1:3900/"); fine("curl -k http://127.0.0.1:3900/");
+    fine("wget --timeout=5 --tries=1 http://127.0.0.1:3900/");
+  });
+  test("still fine: a BODY from a file (`-d @body.json`), an ordinary header, other local ports, a header whose value merely contains an @", () => {
+    fine("curl -d @body.json http://127.0.0.1:3900/"); fine("curl -H 'Accept: application/json' http://127.0.0.1:3900/"); fine("curl -H 'X-Trace: a@b' http://127.0.0.1:3900/");
+    fine("curl -s http://127.0.0.1:3900/"); fine("curl http://localhost:5173"); fine("curl -F 'file=@body.json' http://127.0.0.1:3900/");
+    fine("wget --header='Accept: x' http://127.0.0.1:3900/");
+  });
+});
+
 describe("fails closed", () => {
   test("an empty command, only redirects, only an operator → refused, never allowed", () => {
     for (const c of ["", "   ", "> out.txt", "&&", ";", "|"]) expect([c, judge(c)]).not.toEqual([c, null]);
