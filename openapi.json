@@ -616,6 +616,51 @@
         ],
         "type": "object"
       },
+      "Coverage": {
+        "properties": {
+          "revision": {
+            "description": "the spec revision the answer was computed on",
+            "type": "integer"
+          },
+          "uncovered": {
+            "description": "sorted by key; empty = every rule is covered",
+            "items": {
+              "properties": {
+                "decisions": {
+                  "description": "the keys of the uncovered decisions, sorted",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "key": {
+                  "description": "the part the rules are about (a rule that covers nothing is listed under itself)",
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "kind",
+                "title",
+                "decisions"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "uncovered"
+        ],
+        "type": "object"
+      },
       "Error": {
         "properties": {
           "error": {
@@ -5005,6 +5050,71 @@
               }
             },
             "description": "not_found · blueprint_project_not_found"
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/coverage": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "proposalId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Coverage"
+                }
+              }
+            },
+            "description": "the decisions of Blueprint's current spec that no work card (nor the asked-for proposal) covers"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
           }
         }
       }

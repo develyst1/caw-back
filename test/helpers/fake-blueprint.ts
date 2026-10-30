@@ -29,6 +29,11 @@ export function fakeBlueprint() {
     spec: { revision: 1, version: 1, label: { version: 1, label: "v1" }, savedAt: "2026-10-14T09:01:08.146Z" } as FakeSpec, // synthetic — SPEC-106 v2, until recorded
     changes: [] as FakeChange[], // synthetic — SPEC-106 v2 route 4 (`/spec/changes`), until recorded
     changesBody: null as unknown, // synthetic: non-null = answer `/spec/changes` with exactly this body (a reply that is not a change feed)
+    // synthetic — SPEC-106 v2 route 1 + the REQ-112 addition, until recorded (TASK-121): what `/spec` lists as `parts` / `links` (default none — CAW reads only `revision` and `latestLabel` elsewhere),
+    // `related` = the `relatedDecisions` a part's context carries (merged with `relatedDecisionsMore: false`), `decisionsOn` = the `decisions` it carries instead of the recorded ones
+    snapshot: null as null | { parts: unknown[]; links: unknown[] },
+    related: {} as Record<string, { via: string; decision: unknown }[]>,
+    decisionsOn: {} as Record<string, unknown[]>,
     pageSize: 0, // synthetic: > 0 = answer at most this many change sets and say `more: true` while sets remain (0 = all at once)
   };
   // synthetic — SPEC-106 v2, until recorded: the label as route 1/2/4 show it
@@ -57,13 +62,17 @@ export function fakeBlueprint() {
       const rest = m[2] ?? "";
       if (rest === "") return json("project-200");
       // synthetic — SPEC-106 v2 route 1, until recorded: CAW reads only `revision` and `latestLabel` from it, so `parts` / `links` are empty here
-      if (rest === "/spec") return Response.json({ projectId: m[1], revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel(), parts: [], links: [] });
+      if (rest === "/spec") return Response.json({ projectId: m[1], revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel(), parts: mode.snapshot?.parts ?? [], links: mode.snapshot?.links ?? [] });
       // synthetic — SPEC-106 v2 route 2, until recorded: the recorded context of the chosen version, `version`/`confirmedAt` replaced by `revision`, `savedAt`, `latestLabel`
       const specCtx = /^\/spec\/parts\/(STEP-00[1-6]|DEC-001|API-001|INT-00[23]|SCR-001)\/context$/.exec(rest);
       if (specCtx) {
         if (mode.gone.has(specCtx[1]!)) return Response.json({ error: { code: "not_found", message: `part ${specCtx[1]}` } }, { status: 404 });
         const { version: _v, confirmedAt: _c, ...recordedCtx } = JSON.parse(fixture(`context-v${mode.spec.version}-${specCtx[1]!.toLowerCase()}`));
-        return Response.json({ ...recordedCtx, revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel() });
+        const key = specCtx[1]!;
+        // synthetic — SPEC-106 REQ-112 addition, until recorded: `relatedDecisions` only when a test set them for this part (a v2 Blueprint before TASK-117 has no such field)
+        const rel = mode.related[key] ? { relatedDecisions: mode.related[key], relatedDecisionsMore: false } : {};
+        const dec = mode.decisionsOn[key] ? { decisions: mode.decisionsOn[key] } : {};
+        return Response.json({ ...recordedCtx, ...dec, ...rel, revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel() });
       }
       if (/^\/spec\/parts\/[^/]+\/context$/.test(rest)) return Response.json({ error: { code: "not_found", message: "part" } }, { status: 404 });
       // synthetic — SPEC-106 v2 route 4, until recorded: the change sets a test put in `mode.changes`, after the asked revision

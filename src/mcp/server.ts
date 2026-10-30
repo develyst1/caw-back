@@ -72,7 +72,7 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
 
   server.registerTool("card_context", {
     title: "Card context",
-    description: "Everything you need to do a card: the card, the part of the confirmed spec it is anchored to (as Blueprint has it), the notes on it (oldest first) and the decisions already made for it.",
+    description: "Everything you need to do a card: the card, the part of the spec it is anchored to (as Blueprint has it), the decisions covering that part (spec.decisions) and those on the steps and works around it (spec.relatedDecisions), the notes on it (oldest first) and the decisions already made for it.",
     inputSchema: { cardId: z.string().min(1) },
   }, ({ cardId }) => run("GET", `/v1/cards/${id(cardId)}/context`));
 

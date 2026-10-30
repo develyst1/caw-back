@@ -1,6 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Blueprint } from "../../blueprint/client";
 import type { Db } from "../../db/client";
+import { coverage } from "../../projects/coverage";
 import { checkRebuild, confirmCodeMap, createProject, getProject, listEvents, listProjects, projectView, readPart, saveCodeMap, setMode, setWorkspace } from "../../projects/service";
 import { type Env, requireOperator } from "../actor";
 import { errors } from "../errors";
@@ -40,6 +41,14 @@ const ProjectSummarySchema = ProjectSchema.extend({
 const EventSchema = z.object({
   seq: z.number().int(), projectId: z.string().nullable(), type: z.string(), actor: z.string(), at: z.string(), data: z.unknown(),
 }).openapi("Event");
+// REQ-112 (SPEC-109 § API): the rules of the spec no card covers, grouped under the part each covers; camelCase is the contract with caw-front
+const CoverageSchema = z.object({
+  revision: z.number().int().openapi({ description: "the spec revision the answer was computed on" }),
+  uncovered: z.array(z.object({
+    key: z.string().openapi({ description: "the part the rules are about (a rule that covers nothing is listed under itself)" }), kind: z.string(), title: z.string(),
+    decisions: z.array(z.string()).openapi({ description: "the keys of the uncovered decisions, sorted" }),
+  })).openapi({ description: "sorted by key; empty = every rule is covered" }),
+}).openapi("Coverage");
 
 export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) {
   app.openapi(createRoute({
@@ -61,6 +70,12 @@ export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprin
     method: "get", path: "/v1/projects/{id}", request: { params: Id },
     responses: { 200: json(ProjectSchema, "the project"), 404: errors[404] },
   }), async (c) => c.json(await projectView(db, await getProject(db, c.req.valid("param").id)), 200));
+
+  // REQ-112 (SPEC-109 D2/D4): advisory — never blocks accepting a proposal or starting a run. Any actor may read it.
+  app.openapi(createRoute({
+    method: "get", path: "/v1/projects/{projectId}/coverage", request: { params: z.object({ projectId: z.string() }), query: z.object({ proposalId: z.string().uuid().optional() }) },
+    responses: { 200: json(CoverageSchema, "the decisions of Blueprint's current spec that no work card (nor the asked-for proposal) covers"), 400: errors[400], 404: errors[404], 502: errors[502] },
+  }), async (c) => c.json(await coverage(db, blueprint, c.req.valid("param").projectId, c.req.valid("query").proposalId), 200));
 
   app.openapi(createRoute({
     method: "patch", path: "/v1/projects/{id}/mode",

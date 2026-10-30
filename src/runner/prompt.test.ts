@@ -19,6 +19,11 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
     for (const t of ["comment", "hand_off", "set_status", "ask_operator"]) expect(p).toContain(t);
     expect(p).toMatch(/exactly one/i);
   });
+  test("tells the worker to follow every rule in spec.decisions and spec.relatedDecisions, right after card_context (REQ-112, SPEC-109 D1)", () => {
+    expect(p).toContain("relatedDecisions");
+    expect(p).toContain("2. Follow every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context");
+    expect(p.indexOf("relatedDecisions")).toBeGreaterThan(p.indexOf("1. Call the MCP tool `card_context`"));
+  });
   test("forbids git writes and web", () => {
     expect(p).toMatch(/no git/i);
     expect(p).toMatch(/no web/i);
@@ -154,11 +159,11 @@ describe("real line breaks in the worker's text (TASK-C-039, D-077)", () => {
     expect(p).not.toContain("never the two characters \\\\n"); // not a doubled backslash
     expect(p.indexOf(line)).toBeGreaterThan(p.indexOf("`reply` is mandatory")); // a sub-line of step 6
   });
-  test("the card prompt has rule 5 for `comment` and `ask_operator` text, once", () => {
+  test("the card prompt has rule 6 for `comment` and `ask_operator` text, once", () => {
     const p = buildPrompt({ worker, card, projectId: "p-1" });
-    const rule = "5. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.";
+    const rule = "6. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.";
     expect(count(p, rule)).toBe(1);
-    expect(p.indexOf(rule)).toBeGreaterThan(p.indexOf("4. If you cannot go on"));
+    expect(p.indexOf(rule)).toBeGreaterThan(p.indexOf("5. If you cannot go on")); // REQ-112 inserted rule 2, so this was 5 / 4
   });
 });
 

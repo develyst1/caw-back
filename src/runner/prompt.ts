@@ -15,10 +15,12 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
     `Your card is ${card.id} (#${card.number}) in project ${projectId}.`,
     "",
     "1. Call the MCP tool `card_context` first (with that cardId), then do the work.",
-    "2. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
-    "3. No git writes (no add, commit, push, branch, checkout). No web. Stay inside your working folders.",
-    "4. If you cannot go on without a decision, use `ask_operator` with your proposed default — do not guess.",
-    "5. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.",
+    // REQ-112 (SPEC-109 D1): a rule on a related part binds the card too — Blueprint puts those in `spec.relatedDecisions`
+    "2. Follow every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — a rule on a related part applies to your card too.",
+    "3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
+    "4. No git writes (no add, commit, push, branch, checkout). No web. Stay inside your working folders.",
+    "5. If you cannot go on without a decision, use `ask_operator` with your proposed default — do not guess.",
+    "6. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.",
   ].join("\n");
 }
 
