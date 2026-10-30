@@ -15,8 +15,11 @@ const Text = z.string().min(1).max(8000);
 
 export const CardSchema = z.object({
   id: z.string(), projectId: z.string(), number: z.number().int(), kind: z.enum(["work", "question"]), title: z.string(), todo: z.string(),
-  status: Status, assigneeId: z.string().nullable(), anchor: z.object({ key: z.string(), version: z.number().int() }),
-  specChangedVersion: z.number().int().nullable(), dependsOn: z.array(z.string()),
+  status: Status, assigneeId: z.string().nullable(), anchor: z.object({ key: z.string(), version: z.number().int().openapi({ description: "from REQ-105 on: the LABEL number when the card was cut (0 = no label then)" }) }),
+  anchorLabel: z.string().nullable().openapi({ description: "the label's words when the card was cut (REQ-105); null = none" }),
+  specChangedVersion: z.number().int().nullable(),
+  anchorRemoved: z.boolean().openapi({ description: "true while the card's anchor part is not in Blueprint's spec (REQ-105 D12): the card is not workable and its context answers 404 anchor_removed" }),
+  dependsOn: z.array(z.string()),
   question: z.object({ text: z.string(), proposedDefault: z.string(), cases: z.array(z.string()) }).nullable(), answer: z.string().nullable(),
   workable: z.boolean(),
   stoppedMidway: z.object({ hopId: z.string(), at: z.string(), reason: z.string() }).nullable().openapi({ description: "a card back in `todo` after a hop that failed, was stopped or was interrupted: that hop, when it ended, and the leading sentence of its note; null otherwise (SPEC-108 D7)" }),
@@ -28,7 +31,12 @@ const NoteSchema = z.object({
   allowed: z.array(z.string()).nullable().openapi({ description: "handoff_refused only: who the sender could have handed the card to" }), at: z.string(),
 }).openapi("Note");
 const CardContextSchema = z.object({
-  card: CardSchema, spec: z.unknown().openapi({ description: "Blueprint's PartContext, exactly as its seam returned it" }), notes: z.array(NoteSchema),
+  card: CardSchema, spec: z.unknown().openapi({ description: "Blueprint's v2 part context (SPEC-106 route 2: `revision`, `savedAt`, `latestLabel`, …), exactly as returned — the text the hop was pinned with when `specRead.pinned`" }),
+  specRead: z.object({
+    revision: z.number().int().openapi({ description: "the spec revision `spec` was read at" }), readAt: z.string().openapi({ description: "when CAW read it" }),
+    fromCache: z.boolean().openapi({ description: "Blueprint could not be reached and the last body read was served" }), pinned: z.boolean().openapi({ description: "this is the text the calling hop was given at its start" }),
+  }).openapi({ description: "where `spec` came from (REQ-105)" }),
+  notes: z.array(NoteSchema),
   decisions: z.array(z.object({ cardId: z.string(), number: z.number().int(), question: z.string(), answer: z.string() })),
   codeMap: z.union([CodeMapSchema, z.null()]).openapi({ description: "the project's code map (v1.16) — null until the entry worker saves one; every card hop knows the folders" }),
 }).openapi("CardContext");
@@ -41,9 +49,10 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
     request: { params: ProjectId, body: body(z.object({
       title: z.string().min(1).max(200), todo: z.string().max(8000),
       // optional in the schema so that a missing anchor answers with its own code (anchor_required), not a generic 400
-      anchor: z.object({ key: z.string().min(1), version: z.number().int().min(1) }).optional(),
+      // REQ-105: `version` is optional and IGNORED — CAW sets the label number / words / revision from what Blueprint shows now
+      anchor: z.object({ key: z.string().min(1), version: z.number().int().min(0).optional() }).optional(),
       assigneeId: z.string().optional(), dependsOn: z.array(z.string()).optional(),
-    }), "a card, anchored to a part of a confirmed Blueprint version") },
+    }), "a card, anchored to a part of Blueprint's current spec") },
     responses: { 201: card("created"), 400: errors[400], 403: errors[403], 404: errors[404], 422: errors[422], 502: errors[502] },
   }), async (c) => c.json(await createCard(db, blueprint, c.get("actor"), c.req.valid("param").id, c.req.valid("json")), 201));
 
@@ -67,7 +76,7 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
   app.openapi(createRoute({
     method: "get", path: "/v1/cards/{cardId}/context", request: { params: CardId },
     responses: { 200: json(CardContextSchema, "what a worker needs to do the card"), 404: errors[404], 502: errors[502] },
-  }), async (c) => c.json(await cardContext(db, blueprint, c.req.valid("param").cardId), 200));
+  }), async (c) => c.json(await cardContext(db, blueprint, c.req.valid("param").cardId, c.get("actor"), c.get("hop")), 200)); // + actor and X-CAW-Hop: a worker's own hop gets the text it started with (REQ-105 D5)
 
   app.openapi(createRoute({
     method: "post", path: "/v1/cards/{cardId}/comments", request: { params: CardId, body: body(z.object({ text: Text }), "a comment") },

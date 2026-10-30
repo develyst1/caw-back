@@ -17,17 +17,20 @@ async function world() {
   return { ...s, ...chain, P, msg, hop, as: `worker:${chain.a.id}`, H: hopHeader(hop.id) };
 }
 
-test("locate: Blueprint's Located AS RETURNED (200); the hop keeps only the keys; the operator may call it too (no hop, no keys)", async () => {
+// was: Located AS RETURNED from POST …/locate (with `version`). REQ-105 (D1): the call goes to …/spec/locate and the answer carries `revision` instead of `version`
+// (synthetic v2: the recorded Located with version → revision).
+const v2Located = (name: string) => { const { version: _v, ...rest } = fix(name); return { ...rest, revision: 1 }; };
+test("locate: Blueprint's v2 Located AS RETURNED (200, via /spec/locate); the hop keeps only the keys; the operator may call it too (no hop, no keys)", async () => {
   const w = await world();
   const r = await w.call("POST", `${w.P}/locate`, { request: "ห้องใหญ่ต้องอนุมัติ" }, w.as, w.H);
   expect(r.status).toBe(200);
-  expect(r.json).toEqual(fix("locate-room"));
-  expect(w.fake.mode.bodies.at(-1)).toEqual({ path: `/v1/projects/${BP_PROJECT}/locate`, body: { request: "ห้องใหญ่ต้องอนุมัติ" } });
+  expect(r.json).toEqual(v2Located("locate-room"));
+  expect(w.fake.mode.bodies.at(-1)).toEqual({ path: `/v1/projects/${BP_PROJECT}/spec/locate`, body: { request: "ห้องใหญ่ต้องอนุมัติ" } });
   expect((await w.call("GET", `${w.P}/hops?limit=1`)).json.hops[0].locatedKeys).toEqual(fix("locate-room").candidates.map((c: any) => c.key));
   const op = await w.call("POST", `${w.P}/locate`, { request: "ค้นหาห้องว่าง" }); // the operator: no hop, nothing recorded
-  expect(op.json).toEqual(fix("locate-search"));
+  expect(op.json).toEqual(v2Located("locate-search"));
   expect((await w.call("GET", `${w.P}/hops?limit=1`)).json.hops[0].locatedKeys).toHaveLength(4);
-  expect((await w.call("POST", `${w.P}/locate`, { request: "xyzzy plugh" }, w.as, w.H)).json).toEqual(fix("locate-none"));
+  expect((await w.call("POST", `${w.P}/locate`, { request: "xyzzy plugh" }, w.as, w.H)).json).toEqual(v2Located("locate-none"));
 });
 
 test("locate: request 1–1 000 characters (400) · a worker needs its running chat hop (400 / 403) · a runner is refused · 404 · Blueprint down → 502", async () => {
@@ -76,7 +79,9 @@ test("amendments: request 1–4 000 · about ≤ 20 · Blueprint's 400 (an unkno
   expect((await w.call("POST", A, { request: "ขอ" }, w.as, w.H)).json.error.code).toBe("blueprint_unreachable");
 });
 
-test("no spec text is stored: after a locate, a proposal and an accepted card, no column of any caw table holds a Blueprint part's text — only keys", async () => {
+// was: no column of ANY caw table holds part text. REQ-105 (SPEC-107 D3, owner-visible change in the spec): the two operational tables spec_parts / hop_spec DO hold the body CAW last read —
+// that is their whole job — so they are the named exceptions; every other table and every event stays free of part text.
+test("no spec text is stored outside spec_parts / hop_spec: after a locate, a proposal and an accepted card, no other column of any caw table holds a Blueprint part's text — only keys", async () => {
   const w = await world();
   const found = fix("locate-room").candidates as { key: string; title: string }[];
   await w.call("POST", `${w.P}/locate`, { request: "ห้องใหญ่ต้องอนุมัติ" }, w.as, w.H);
@@ -92,7 +97,7 @@ test("no spec text is stored: after a locate, a proposal and an accepted card, n
   const hits: string[] = [];
   for (const { table_name, column_name } of cols) {
     const rows = await rowsOf<{ v: string | null }>(sql.raw(`select "${column_name}"::text as v from caw."${table_name}"`));
-    for (const { v } of rows) for (const t of texts) if (v?.includes(t) && !(table_name === "projects" && column_name === "name") && !(table_name === "events" && column_name === "data")) hits.push(`${table_name}.${column_name} ⊃ ${t}`);
+    for (const { v } of rows) for (const t of texts) if (v?.includes(t) && !(table_name === "projects" && column_name === "name") && !(table_name === "events" && column_name === "data") && !(["spec_parts", "hop_spec"].includes(table_name) && column_name === "body")) hits.push(`${table_name}.${column_name} ⊃ ${t}`);
   }
   expect(hits).toEqual([]);
   // the events: the located part titles are not in any event's data either (the project name — the one allowed exception — is not a located part here)

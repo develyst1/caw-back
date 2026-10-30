@@ -2,6 +2,7 @@ import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import { defaultWebUrl } from "../../blueprint/client";
 import { chatContext, listMessages, postMessage, reply, retryMessage } from "../../chat/service";
 import type { Db } from "../../db/client";
+import { projectView } from "../../projects/service";
 import type { Env } from "../actor";
 import { errors } from "../errors";
 import { ChainSchema } from "./chain";
@@ -39,7 +40,10 @@ export function chatRoutes(app: OpenAPIHono<Env>, db: Db) {
       200: json(z.object({ message: ChatMessageSchema, thread: z.array(ChatMessageSchema), project: ProjectSchema, chain: ChainSchema }), "what a worker needs to answer the message"),
       400: errors[400], 403: errors[403], 404: errors[404],
     },
-  }), async (c) => c.json(await chatContext(db, c.get("actor"), c.get("hop"), c.req.valid("param").messageId), 200));
+  }), async (c) => {
+    const ctx = await chatContext(db, c.get("actor"), c.get("hop"), c.req.valid("param").messageId);
+    return c.json({ ...ctx, project: await projectView(db, ctx.project) }, 200); // REQ-105: the project carries `spec`, wherever it is returned
+  });
 
   app.openapi(createRoute({
     method: "post", path: "/v1/chat/{messageId}/reply",

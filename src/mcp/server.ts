@@ -109,7 +109,7 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
   const Questions = z.array(z.object({ text: z.string().min(1), proposedDefault: z.string().min(1), cases: z.array(z.string().min(1)).min(1).max(10) })).max(10);
   const Item = z.object({
     title: z.string().min(1).describe("the card's title (1–200 characters)"), todo: z.string().describe("what to do"),
-    anchor: z.object({ key: z.string().min(1), version: z.number().int().min(1) }).describe("a part `locate` found, and the confirmed version it is in"),
+    anchor: z.object({ key: z.string().min(1), version: z.number().int().min(0).optional() }).describe("a part `locate` found; send its key — the version is optional and ignored (REQ-105)"),
     workerId: z.string().min(1).describe("the chain member who gets the card"),
     dependsOn: z.array(z.number().int().min(0)).default([]).describe("indexes of the items in this list that must be done first"),
     hops: z.number().int().min(1).describe("your estimate of the hops this card needs"),

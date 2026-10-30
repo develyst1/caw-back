@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import { cards, events, workers } from "../../src/db/schema";
-import { createProject, setup } from "../helpers/api";
+import { chatWorld, createProject, postChat, setup } from "../helpers/api";
 import { writeEvent } from "../../src/core/write";
 import { BP_NAME, BP_PROJECT, BP_PROJECT_2 } from "../helpers/fake-blueprint";
 
@@ -41,28 +41,34 @@ test("POST /v1/projects: 201 with the Project — ids and version only; the even
   const r = await create(call);
   expect(r.status).toBe(201);
   expect(r.json).toMatchObject({
-    name: BP_NAME, blueprintProjectId: BP_PROJECT, version: 1, latestSeenVersion: 1, mode: "manual", hopBudget: 0, hopsUsed: 0,
+    name: BP_NAME, blueprintProjectId: BP_PROJECT, version: 1, latestSeenVersion: 1, latestLabel: { version: 1, label: "v1" }, mode: "manual", hopBudget: 0, hopsUsed: 0,
     entryWorkerId: null, workspace: { roots: [], readOnly: [] }, codeMap: null,
   });
-  expect(Object.keys(r.json).sort()).toEqual(["blueprintProjectId", "codeMap", "createdAt", "entryWorkerId", "hopBudget", "hopsUsed", "id", "latestSeenVersion", "mode", "name", "version", "workspace"]);
-  expect(fake.mode.calls).toEqual([`GET /v1/projects/${BP_PROJECT}`, `GET /v1/projects/${BP_PROJECT}/versions/1`]);
+  // REQ-105: + latestLabel, + spec (was: neither key); a new project has been pulled to the revision it started at, never yet by a pull
+  expect(Object.keys(r.json).sort()).toEqual(["blueprintProjectId", "codeMap", "createdAt", "entryWorkerId", "hopBudget", "hopsUsed", "id", "latestLabel", "latestSeenVersion", "mode", "name", "spec", "version", "workspace"]);
+  expect(r.json.spec).toEqual({ revision: 1, reachable: true, lastPullAt: null });
+  // REQ-105 (D11): was [GET project, GET …/versions/1] — the start reads the CURRENT spec, no version is asked for
+  expect(fake.mode.calls).toEqual([`GET /v1/projects/${BP_PROJECT}`, `GET /v1/projects/${BP_PROJECT}/spec`]);
   const [ev] = await db.select().from(events);
   expect([ev!.type, ev!.actor, ev!.projectId]).toEqual(["project.created", "operator", r.json.id]);
-  expect(ev!.data).toEqual({ id: r.json.id, name: BP_NAME, blueprintProjectId: BP_PROJECT, version: 1 });
+  // was { id, name, blueprintProjectId, version: 1 }: + the label Blueprint showed and the spec revision (both optional in the event)
+  expect(ev!.data).toEqual({ id: r.json.id, name: BP_NAME, blueprintProjectId: BP_PROJECT, version: 1, latestLabel: { version: 1, label: "v1" }, revision: 1 });
 });
 
-test("POST /v1/projects errors: 400 body · 404 blueprint_project_not_found · 409 version_not_confirmed · 409 already_exists (with its id) · 502", async () => {
+// was: "…400 body · 404 · 409 version_not_confirmed · 409 already_exists · 502". REQ-105 (D11): `version` is optional and IGNORED, so a version-less body and a version 0 are fine (they were 400),
+// and a version Blueprint never confirmed starts the project all the same (it was 409 version_not_confirmed — gone).
+test("POST /v1/projects errors: 400 body · 404 blueprint_project_not_found · 409 already_exists (with its id) · 502 — and `version` is ignored (no 409 version_not_confirmed any more)", async () => {
   const { call, fake } = await setup();
   expect((await call("POST", "/v1/projects", { blueprintProjectId: "", version: 1 })).status).toBe(400);
-  expect((await call("POST", "/v1/projects", { blueprintProjectId: BP_PROJECT, version: 0 })).status).toBe(400);
-  expect((await call("POST", "/v1/projects", { blueprintProjectId: BP_PROJECT })).status).toBe(400);
+  expect((await call("POST", "/v1/projects", { blueprintProjectId: BP_PROJECT, version: -1 })).status).toBe(400);
+  expect((await call("POST", "/v1/projects", { blueprintProjectId: BP_PROJECT, version: "x" })).status).toBe(400);
+  expect((await call("POST", "/v1/projects", {})).status).toBe(400);
 
   const nf = await create(call, { blueprintProjectId: "00000000-0000-0000-0000-000000000099" });
   expect([nf.status, nf.json.error.code]).toEqual([404, "blueprint_project_not_found"]);
-  const nv = await create(call, { version: 9 });
-  expect([nv.status, nv.json.error.code]).toEqual([409, "version_not_confirmed"]);
 
-  const first = await create(call);
+  const first = await create(call, { version: 9 }); // a version Blueprint never confirmed: ignored — the project starts at the label Blueprint shows now
+  expect([first.status, first.json.version, first.json.latestLabel]).toEqual([201, 1, { version: 1, label: "v1" }]);
   const again = await create(call);
   expect([again.status, again.json.error.code, again.json.error.details]).toEqual([409, "already_exists", { id: first.json.id }]);
 
@@ -140,7 +146,8 @@ test("AC-1 no spec content: after a project is created, no column of any caw tab
   expect(hits).toEqual([]);
   // events.data carries the project's name too (the same allowed exception) and nothing else of the spec
   const [ev] = await db.select().from(events);
-  expect(Object.keys(ev!.data as object).sort()).toEqual(["blueprintProjectId", "id", "name", "version"]);
+  // REQ-105: + latestLabel (number + words) and revision — the label's words are a name Blueprint's user typed, kept like the project name; no part text
+  expect(Object.keys(ev!.data as object).sort()).toEqual(["blueprintProjectId", "id", "latestLabel", "name", "revision", "version"]);
 });
 
 // ---- TASK-A-092 / contract v1.15 (D-082): one CAW project per Blueprint project, at ANY version ----
@@ -187,14 +194,54 @@ test("v1.15: with two LEGACY projects of one Blueprint project (v1 and v2), POST
   expect(await projectCount(call)).toBe(2); // nothing merged, nothing deleted, nothing added
 });
 
-test("v1.15: the older checks still come first — 400, then 404 blueprint_project_not_found, then 409 version_not_confirmed, and only then already_exists", async () => {
+// was: "…400, then 404, then 409 version_not_confirmed, and only then already_exists". REQ-105: version_not_confirmed is gone; `version: 0` is no longer a 400 (it is ignored); a negative one is.
+test("v1.15: the older checks still come first — 400, then 404 blueprint_project_not_found, and only then already_exists (a version Blueprint never confirmed no longer matters)", async () => {
   const { call } = await setup();
   const first = await create(call, { version: 1 });
-  expect((await create(call, { version: 0 })).status).toBe(400);
+  expect((await create(call, { version: -1 })).status).toBe(400);
   const missing = await create(call, { blueprintProjectId: "00000000-0000-0000-0000-000000000099", version: 2 });
   expect([missing.status, missing.json.error.code]).toEqual([404, "blueprint_project_not_found"]);
-  const unconfirmed = await create(call, { version: 9 }); // an unconfirmed version of a Blueprint project that already has a CAW project
-  expect([unconfirmed.status, unconfirmed.json.error.code]).toEqual([409, "version_not_confirmed"]);
+  const unconfirmed = await create(call, { version: 9 }); // was 409 version_not_confirmed; the version is ignored, so this is the ordinary already_exists
+  expect([unconfirmed.status, unconfirmed.json.error.code, unconfirmed.json.error.details]).toEqual([409, "already_exists", { id: first.json.id }]);
   const same = await create(call, { version: 1 });
   expect([same.status, same.json.error.code, same.json.error.details]).toEqual([409, "already_exists", { id: first.json.id }]);
+});
+
+// REQ-105 (SPEC-107 D10, TASK-115): `spec { revision, reachable, lastPullAt }` on EVERY route that returns a project, and `latestLabel` with it
+test("the project's `spec` is on every route that returns a project; no follow_state row → { 0, true, null }; a pull moves it, an outage turns `reachable` off", async () => {
+  const s = await setup();
+  const { call, db, fake, follow } = s;
+  const p = (await create(call)).json;
+  expect(p.spec).toEqual({ revision: 1, reachable: true, lastPullAt: null });
+  // made by an event alone (as projects were before follow_state existed): nothing pulled yet
+  const bareId = crypto.randomUUID();
+  await writeEvent(db, { type: "project.created", projectId: bareId, actor: "operator", at: new Date().toISOString(), data: { id: bareId, name: "bare", blueprintProjectId: BP_PROJECT_2, version: 7 } });
+  expect((await call("GET", `/v1/projects/${bareId}`)).json.spec).toEqual({ revision: 0, reachable: true, lastPullAt: null });
+  // after a pull that saw revision 3 and a label
+  fake.mode.changes.push({ rev: 3, at: "2026-10-29T07:00:00.000Z", by: "โด่ง", cause: "edit", added: ["STEP-099"], changed: [], removed: [] });
+  fake.mode.spec.revision = 3;
+  fake.mode.spec.label = { version: 2, label: "ส่งลูกค้า" };
+  await follow.pullFor(BP_PROJECT);
+  const got = (await call("GET", `/v1/projects/${p.id}`)).json;
+  expect(got.spec).toMatchObject({ revision: 3, reachable: true });
+  expect(typeof got.spec.lastPullAt).toBe("string");
+  expect(got.latestLabel).toEqual({ version: 2, label: "ส่งลูกค้า" });
+  // the same `spec` on the list, the mode and workspace answers, and the chat context's project
+  const spec = got.spec;
+  expect((await call("GET", "/v1/projects")).json.projects.find((x: any) => x.id === p.id).spec).toEqual(spec);
+  expect((await call("PATCH", `/v1/projects/${p.id}/mode`, { mode: "dispatcher" })).json.spec).toEqual(spec);
+  expect((await call("PATCH", `/v1/projects/${p.id}/workspace`, { roots: ["/srv/a"] })).json.spec).toEqual(spec);
+  // Blueprint down: the next pull flips `reachable`, keeps `revision` and `lastPullAt`
+  fake.mode.down = true;
+  await follow.pullFor(BP_PROJECT);
+  expect((await call("GET", `/v1/projects/${p.id}`)).json.spec).toEqual({ ...spec, reachable: false });
+});
+
+test("the chat context's project carries `spec` too (the worker's view of the project)", async () => {
+  const { call } = await setup();
+  const chain = await chatWorld(call);
+  const msg = (await postChat(call, chain.project.id)).json;
+  const ctx = await call("GET", `/v1/chat/${msg.id}/context`);
+  expect(ctx.status).toBe(200);
+  expect(ctx.json.project.spec).toEqual({ revision: 1, reachable: true, lastPullAt: null });
 });

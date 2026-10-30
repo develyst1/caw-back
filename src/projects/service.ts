@@ -1,6 +1,7 @@
 // Projects (SPEC-A-008 § API): made from a confirmed Blueprint version; CAW keeps ids and numbers, never spec content.
 import { asc, desc, eq, sql } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
+import { readLatestPart } from "../blueprint/latest";
 import { rebuildCheck } from "../core/rebuild";
 import type { CodeMapState, ProjectState } from "../core/reduce";
 import { loadState } from "../core/state";
@@ -10,19 +11,31 @@ import type { Actor, CodeMapInput, Mode } from "../core/events";
 import { now } from "../core/ids";
 import { rewriteForActor } from "../core/paths";
 import type { Db } from "../db/client";
-import { cards, events, projects } from "../db/schema";
+import { cards, events, followState, projects } from "../db/schema";
 import { requireOperator } from "../http/actor";
 import { ApiError, notFound } from "../http/errors";
 
 export type Project = ProjectState;
-export type ProjectSummary = Project & { cardsDone: number; cardsTotal: number; stuckCount: number };
+/** REQ-105 (D10): how far the follower has got — the spec revision it pulled to, whether the last pull reached Blueprint, and when it last got through. Operational (follow_state), not replayed. */
+export type SpecStatus = { revision: number; reachable: boolean; lastPullAt: string | null };
+/** a project as the API shows it: the replayed state plus `spec` */
+export type ProjectView = Project & { spec: SpecStatus };
+export type ProjectSummary = ProjectView & { cardsDone: number; cardsTotal: number; stuckCount: number };
 
-export async function createProject(db: Db, blueprint: Blueprint, actor: Actor, input: { blueprintProjectId: string; version: number }): Promise<Project> {
+/** no follow_state row yet (nothing pulled) → revision 0, reachable, never pulled */
+export async function projectView(db: Db, project: Project): Promise<ProjectView> {
+  const [row] = await db.select().from(followState).where(eq(followState.projectId, project.id));
+  return { ...project, spec: { revision: row?.lastPulledRevision ?? 0, reachable: row?.lastPullOk ?? true, lastPullAt: row?.lastPullAt?.toISOString() ?? null } };
+}
+
+// REQ-105 (SPEC-107 D11): a project starts from Blueprint's CURRENT spec — no confirmed version, no label needed. `version` in the body is accepted and ignored (old links); the
+// start label is whatever label Blueprint shows now (number 0 = none), and the pull starts from the revision the spec is at, so a new project is not flooded with old changes.
+export async function createProject(db: Db, blueprint: Blueprint, actor: Actor, input: { blueprintProjectId: string; version?: number }): Promise<Project> {
   const bp = await blueprint.getProject(input.blueprintProjectId);
   if (!bp) throw new ApiError(404, "blueprint_project_not_found", `Blueprint has no project ${input.blueprintProjectId}`);
-  if (!(await blueprint.getVersion(input.blueprintProjectId, input.version))) {
-    throw new ApiError(409, "version_not_confirmed", `version ${input.version} of that Blueprint project is not a confirmed version`);
-  }
+  const spec = await blueprint.spec(input.blueprintProjectId);
+  if (!spec) throw new ApiError(404, "blueprint_project_not_found", `Blueprint has no project ${input.blueprintProjectId}`);
+  const latestLabel = spec.latestLabel ? { version: spec.latestLabel.version, label: spec.latestLabel.label } : null;
   // v1.15 (D-082): one CAW project per Blueprint project, at ANY version — a newer version is followed by the project that exists
   // (latestSeenVersion), not by a second project. Older duplicates may exist; the answer names the one with the highest version, then the newest.
   const [existing] = await db.select({ id: projects.id }).from(projects)
@@ -31,8 +44,11 @@ export async function createProject(db: Db, blueprint: Blueprint, actor: Actor, 
   const id = crypto.randomUUID();
   const { state } = await writeEvent(db, {
     type: "project.created", projectId: id, actor, at: new Date().toISOString(),
-    data: { id, name: bp.name, blueprintProjectId: input.blueprintProjectId, version: input.version },
+    data: { id, name: bp.name, blueprintProjectId: input.blueprintProjectId, version: latestLabel?.version ?? 0, latestLabel, revision: spec.revision },
   });
+  // operational (not replayed): where the pull starts. TASK-115 moves it; the version column keeps the label number it had (0 = none)
+  const row = { projectId: id, lastPulledVersion: latestLabel?.version ?? 0, lastPullAt: null, lastPulledRevision: spec.revision, lastPullOk: true };
+  await db.insert(followState).values(row).onConflictDoUpdate({ target: followState.projectId, set: row });
   return state.project!;
 }
 
@@ -96,13 +112,13 @@ export async function confirmCodeMap(db: Db, actor: Actor, projectId: string): P
   }
 }
 
-// v1.7: a read-only proxy to Blueprint's part context — one seam call, as returned, nothing stored (REQ-010 R1). `version` defaults
-// to the project's latestSeenVersion. Blueprint has no such part (or no such version) → 404 part_not_found.
-export async function readPart(db: Db, blueprint: Blueprint, projectId: string, key: string, version?: number): Promise<unknown> {
+// v1.7 → REQ-105: a read of a part of Blueprint's CURRENT spec, as returned (D4: when Blueprint cannot be reached the last body read is served; none saved → 502 as before).
+// The old `version` query is still accepted by the route and IGNORED here — there is no "version N of the spec" to ask for any more. Not in the current spec → 404 part_not_found.
+export async function readPart(db: Db, blueprint: Blueprint, projectId: string, key: string): Promise<unknown> {
   const project = await getProject(db, projectId);
-  const body = await blueprint.partContext(project.blueprintProjectId, version ?? project.latestSeenVersion, key);
-  if (body === null) throw new ApiError(404, "part_not_found", `Blueprint has no part ${key} at version ${version ?? project.latestSeenVersion}`);
-  return body;
+  const read = await readLatestPart(db, blueprint, project, key);
+  if (read === null) throw new ApiError(404, "part_not_found", `Blueprint's current spec has no part ${key}`);
+  return read.body;
 }
 
 export async function getProject(db: Db, id: string): Promise<Project> {
@@ -111,19 +127,19 @@ export async function getProject(db: Db, id: string): Promise<Project> {
   return project;
 }
 
-// stuck = status `stuck`, or an open question card, or a card whose spec changed under it — never a finished (done) card; each card counted once
+// stuck = status `stuck`, or an open question card — never a finished (done) card; each card counted once. (REQ-105 D7: "its spec changed" left this count — a card the flag no longer stops is not stuck.)
 export async function listProjects(db: Db): Promise<ProjectSummary[]> {
   const rows = await db.select({ id: projects.id }).from(projects).orderBy(desc(projects.createdAt), asc(projects.id)); // newest first, as Blueprint lists
   const counts = await db.select({
     projectId: cards.projectId,
     total: sql<number>`count(*)::int`,
     done: sql<number>`count(*) filter (where ${cards.status} = 'done')::int`,
-    stuck: sql<number>`count(*) filter (where ${cards.status} = 'stuck' or (${cards.kind} = 'question' and ${cards.status} <> 'done') or (${cards.specChangedVersion} is not null and ${cards.status} <> 'done'))::int`,
+    stuck: sql<number>`count(*) filter (where ${cards.status} = 'stuck' or (${cards.kind} = 'question' and ${cards.status} <> 'done'))::int`,
   }).from(cards).groupBy(cards.projectId);
   const byProject = new Map(counts.map((c) => [c.projectId, c]));
   return Promise.all(rows.map(async ({ id }) => {
     const c = byProject.get(id);
-    return { ...(await getProject(db, id)), cardsDone: c?.done ?? 0, cardsTotal: c?.total ?? 0, stuckCount: c?.stuck ?? 0 };
+    return { ...(await projectView(db, await getProject(db, id))), cardsDone: c?.done ?? 0, cardsTotal: c?.total ?? 0, stuckCount: c?.stuck ?? 0 };
   }));
 }
 

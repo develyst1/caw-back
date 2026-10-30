@@ -1,0 +1,1 @@
+ALTER TABLE "caw"."cards" ADD COLUMN "anchor_removed_revision" integer;

@@ -2,6 +2,7 @@
 // of the spec itself. Each write is one event decided inside the write transaction on the project's current state.
 import { eq } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
+import { labelOf, pinnedRead, readLatestPart, type LatestRead } from "../blueprint/latest";
 import type { Actor, CardStatus } from "../core/events";
 import { newId, now } from "../core/ids";
 import { rewriteForActor } from "../core/paths";
@@ -49,19 +50,16 @@ const notMember = (id: string) => new ApiError(400, "not_a_member", `worker ${id
 
 // ---------- create / read ----------
 export async function createCard(db: Db, blueprint: Blueprint, actor: Actor, projectId: string,
-  input: { title: string; todo: string; anchor?: { key: string; version: number }; assigneeId?: string; dependsOn?: string[] }): Promise<Card> {
+  input: { title: string; todo: string; anchor?: { key: string; version?: number }; assigneeId?: string; dependsOn?: string[] }): Promise<Card> {
   requireOperator(actor);
-  if (!input.anchor) throw new ApiError(400, "anchor_required", "a card needs an anchor: { key, version } — a part of a confirmed Blueprint version");
-  const anchor = input.anchor;
+  if (!input.anchor) throw new ApiError(400, "anchor_required", "a card needs an anchor: { key } — a part of Blueprint's current spec");
   const { project } = await projectState(db, projectId);
-  // The anchor is checked against Blueprint's own seam, outside the write lock (a network call): the version must be a
-  // confirmed one, and the part must exist in it. CAW keeps only { key, version }.
-  if (!(await blueprint.getVersion(project!.blueprintProjectId, anchor.version))) {
-    throw new ApiError(422, "version_not_confirmed", `version ${anchor.version} is not a confirmed version of this project's Blueprint project`);
-  }
-  if ((await blueprint.partContext(project!.blueprintProjectId, anchor.version, anchor.key)) === null) {
-    throw new ApiError(422, "anchor_not_in_version", `${anchor.key} is not a part of version ${anchor.version}`);
-  }
+  // REQ-105 (SPEC-107 D2/D4): the anchor is the key; CAW sets the rest from what Blueprint shows NOW — the label number (0 = none) and words, and the spec revision. A `version` in the
+  // body is ignored. The key must be live in the current spec (422 anchor_not_in_version); the read is outside the write lock (a network call).
+  const read = await readLatestPart(db, blueprint, project!, input.anchor.key);
+  if (read === null) throw new ApiError(422, "anchor_not_in_version", `${input.anchor.key} is not a part of Blueprint's current spec`);
+  const label = labelOf(read.body);
+  const anchor = { key: input.anchor.key, version: label.version, label: label.label, revision: read.revision };
   const id = newId();
   const { state } = await writeDecided(db, projectId, (s) => {
     need(s.project, "project");
@@ -87,16 +85,28 @@ export async function getCard(db: Db, cardId: string): Promise<Card> {
   return cardView(state, card);
 }
 
-export type CardContext = { card: Card; spec: unknown; notes: Note[]; decisions: { cardId: string; number: number; question: string; answer: string }[]; codeMap: CodeMapState | null };
+/** REQ-105: where `spec` came from — the spec revision, when CAW read it, whether Blueprint was unreachable and the last body read was served, and whether it is the text the hop was pinned with */
+export type SpecRead = { revision: number; readAt: string; fromCache: boolean; pinned: boolean };
+export type CardContext = { card: Card; spec: unknown; specRead: SpecRead; notes: Note[]; decisions: { cardId: string; number: number; question: string; answer: string }[]; codeMap: CodeMapState | null };
 
-// spec = Blueprint's PartContext exactly as returned (no reshaping). notes oldest first. decisions = the answered question
+// spec = Blueprint's v2 part context exactly as returned (no reshaping). notes oldest first. decisions = the answered question
 // cards this card depends on directly (SPEC A-1, Interpreted).
-export async function cardContext(db: Db, blueprint: Blueprint, cardId: string): Promise<CardContext> {
+// REQ-105 D5: a worker reading its OWN running-or-finished card hop's card with that hop's `X-CAW-Hop` gets the text the hop was pinned with at its start (AC-2), even after the spec moved on.
+// Any other caller — the operator, a worker reading another card, a hop with no pin — gets the latest read (D4), which falls back to the last body read when Blueprint is down (AC-5).
+export async function cardContext(db: Db, blueprint: Blueprint, cardId: string, actor: Actor, hopId: string | null): Promise<CardContext> {
   const { state, card } = await findCard(db, cardId);
-  const spec = await blueprint.partContext(state.project!.blueprintProjectId, card.anchorVersion, card.anchorKey);
-  if (spec === null) throw new ApiError(502, "blueprint_unreachable", `Blueprint no longer has ${card.anchorKey} in version ${card.anchorVersion}`);
+  const wid = workerIdOf(actor);
+  const hop = hopId === null || wid === null ? undefined : state.hops.find((h) => h.id === hopId && h.cardId === card.id && h.workerId === wid);
+  const pinned: LatestRead | null = hop ? await pinnedRead(db, hop.id) : null;
+  // REQ-105 D12 (Q4): a removed anchor part is its own answer — 404 `anchor_removed`, not an outage. A worker's own pinned hop still gets its pinned text (D5 wins, above).
+  const removed = () => new ApiError(404, "anchor_removed", `part ${card.anchorKey} was removed from the spec`);
+  if (pinned === null && card.anchorRemovedRevision !== null) throw removed();
+  const read = pinned ?? await readLatestPart(db, blueprint, state.project!, card.anchorKey);
+  // The part is no longer in the current spec but the pull has not seen it yet: the same answer.
+  if (read === null) throw removed();
   return {
-    card: cardView(state, card), spec,
+    card: cardView(state, card), spec: read.body,
+    specRead: { revision: read.revision, readAt: read.readAt, fromCache: read.fromCache, pinned: pinned !== null },
     notes: state.notes.filter((n) => n.cardId === cardId).sort((a, b) => (a.id < b.id ? -1 : 1)).map(noteView),
     decisions: depsOf(state, cardId).filter((d) => d.kind === "question" && d.answer !== null)
       .map((d) => ({ cardId: d.id, number: d.number, question: d.question!.text, answer: d.answer! })),

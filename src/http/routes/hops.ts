@@ -1,4 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
+import type { Blueprint } from "../../blueprint/client";
+import { pinHop } from "../../blueprint/latest";
+import { loadState } from "../../core/state";
 import type { Db } from "../../db/client";
 import { finishRun, heartbeatHop, listHops, listRuns, patchHop, startHop, startRun } from "../../hops/service";
 import type { Env } from "../actor";
@@ -26,14 +29,25 @@ const Finish = z.strictObject({
 });
 const Claim = z.strictObject({ claim: z.string().min(1).max(200) });
 
-export function hopRoutes(app: OpenAPIHono<Env>, db: Db) {
+export function hopRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) {
   app.openapi(createRoute({
     method: "post", path: "/v1/projects/{id}/hops",
     request: { params: ProjectId, body: body(z.object({
       cardId: z.string().min(1).optional(), messageId: z.string().min(1).optional(), workerId: z.string().min(1), runId: z.string().min(1).optional(), claim: z.string().min(1).max(200).optional(),
     }).refine((b) => (b.cardId === undefined) !== (b.messageId === undefined), "give exactly one of cardId and messageId"), "start a hop: one turn of one worker on one workable card — or, as the entry worker, on one unanswered chat message") },
     responses: { 201: json(HopSchema, "the running hop"), 400: errors[400], 404: errors[404], 409: errors[409] },
-  }), async (c) => c.json(await startHop(db, c.get("actor"), c.req.valid("param").id, c.req.valid("json")), 201));
+  }), async (c) => {
+    const projectId = c.req.valid("param").id;
+    const hop = await startHop(db, c.get("actor"), projectId, c.req.valid("json"));
+    // REQ-105 (SPEC-107 D5): a CARD hop keeps the text it started with — read the card's part now and pin it. It never fails the hop (a failed pin is one log line; card_context then falls back
+    // to the latest read). A chat hop is not pinned: it locates on demand.
+    if (hop.cardId !== null) {
+      const s = await loadState(db, projectId);
+      const card = s.cards.find((x) => x.id === hop.cardId);
+      if (s.project && card) await pinHop(db, blueprint, s.project, hop.id, card.anchorKey);
+    }
+    return c.json(hop, 201);
+  });
 
   app.openapi(createRoute({
     method: "patch", path: "/v1/hops/{hopId}", request: { params: z.object({ hopId: z.string() }), body: body(z.union([Finish, Claim]), "finish the hop, or claim it (set once)") },

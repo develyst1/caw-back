@@ -83,7 +83,10 @@ test("card_context: the API's CardContext — Blueprint's spec untouched, notes,
   const r = await call("card_context", { cardId: w.c1.id });
   expect(r.isError).toBe(false);
   const direct = (await w.call("GET", `/v1/cards/${w.c1.id}/context`)).json;
-  expect(r.json).toEqual(direct);
+  // was: toEqual(direct). REQ-105 (D5): the worker's own hop is given the text it started with (specRead.pinned true, its own readAt); the operator's direct call is the latest read (pinned false)
+  expect({ ...r.json, specRead: undefined }).toEqual({ ...direct, specRead: undefined });
+  expect(r.json.specRead).toMatchObject({ revision: 1, fromCache: false, pinned: true });
+  expect(direct.specRead.pinned).toBe(false);
   expect(r.json.spec.part.key).toBe("STEP-004");
   expect(r.json.notes.map((n: any) => n.text)).toEqual(["เริ่มอ่าน spec"]);
   const missing = await call("card_context", { cardId: "00000000-0000-0000-0000-000000000099" });

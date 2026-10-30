@@ -3,6 +3,7 @@
 // call) and a proposal may anchor only on keys its hop LOCATED (v1.6).
 import { eq } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
+import { cardAnchor, labelOf, readLatestPart, type LatestRead } from "../blueprint/latest";
 import { chatHopOf } from "../chat/guard";
 import type { Actor, ProposalItem } from "../core/events";
 import { newId, now } from "../core/ids";
@@ -56,32 +57,34 @@ function check(s: State, actor: Actor, hopId: string | null, input: { messageId:
   if (missing.length) throw new ApiError(422, "anchor_not_located", "an item is anchored on a key this hop did not locate", { keys: missing });
 }
 
-/** Each distinct anchor must be a part of a confirmed version of the project's Blueprint project — as a card's anchor is (A-072). */
-async function checkAnchors(blueprint: Blueprint, bp: string, items: ProposalItem[]): Promise<void> {
-  const versions = new Map<number, boolean>();
+/** REQ-105 (SPEC-107 D4): each distinct anchor key must be live in Blueprint's CURRENT spec — read once per key (cache-aware: Blueprint down → the last body read). Returns what each read
+ *  said, by key, so the caller can store the label number / words / revision the card or proposal is cut at. A `version` on an item is ignored. */
+async function checkAnchors(db: Db, blueprint: Blueprint, project: { id: string; blueprintProjectId: string }, items: { anchor: { key: string } }[]): Promise<Map<string, LatestRead>> {
+  const reads = new Map<string, LatestRead>();
   for (const { anchor } of items) {
-    if (!versions.has(anchor.version)) versions.set(anchor.version, (await blueprint.getVersion(bp, anchor.version)) !== null);
-    if (!versions.get(anchor.version)) throw new ApiError(422, "version_not_confirmed", `version ${anchor.version} is not a confirmed version of this project's Blueprint project`);
+    if (reads.has(anchor.key)) continue;
+    const read = await readLatestPart(db, blueprint, project, anchor.key);
+    if (read === null) throw new ApiError(422, "anchor_not_in_version", `${anchor.key} is not a part of Blueprint's current spec`);
+    reads.set(anchor.key, read);
   }
-  const seen = new Set<string>();
-  for (const { anchor } of items) {
-    const id = `${anchor.version}|${anchor.key}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    if ((await blueprint.partContext(bp, anchor.version, anchor.key)) === null) throw new ApiError(422, "anchor_not_in_version", `${anchor.key} is not a part of version ${anchor.version}`);
-  }
+  return reads;
 }
 
+/** an item as it arrives: `anchor.version` is optional and ignored (REQ-105) */
+export type ProposalItemIn = Omit<ProposalItem, "anchor"> & { anchor: { key: string; version?: number } };
+
 export async function propose(db: Db, blueprint: Blueprint, actor: Actor, hopId: string | null, projectId: string,
-  input: { messageId: string; items: ProposalItem[] }): Promise<Proposal> {
+  input: { messageId: string; items: ProposalItemIn[] }): Promise<Proposal> {
   const before = await loadState(db, projectId);
-  check(before, actor, hopId, input);
-  await checkAnchors(blueprint, projectIn(before).blueprintProjectId, input.items);
+  // `check` needs only anchor.key; the items are STORED with the label number the read carried (D2: 0 = none), so a stored proposal always has a number
+  check(before, actor, hopId, { messageId: input.messageId, items: input.items.map((i) => ({ ...i, anchor: { key: i.anchor.key, version: 0 } })) });
+  const reads = await checkAnchors(db, blueprint, projectIn(before), input.items);
+  const items: ProposalItem[] = input.items.map((i) => ({ ...i, anchor: { key: i.anchor.key, version: labelOf(reads.get(i.anchor.key)!.body).version } }));
   const id = newId();
   const { state } = await writeDecided(db, projectId, (s) => {
-    check(s, actor, hopId, input); // again, on the state the write sees
+    check(s, actor, hopId, { messageId: input.messageId, items }); // again, on the state the write sees
     return { type: "proposal.made", projectId, actor, at: now(), data: {
-      id, messageId: input.messageId, version: Math.max(...input.items.map((i) => i.anchor.version)), items: input.items,
+      id, messageId: input.messageId, version: Math.max(...items.map((i) => i.anchor.version)), items,
       // an older OPEN proposal on the same message is superseded in this same event
       supersedes: s.proposals.filter((p) => p.messageId === input.messageId && p.status === "open").map((p) => p.id),
     } };
@@ -106,7 +109,8 @@ export async function accept(db: Db, blueprint: Blueprint, actor: Actor, proposa
   const before = await loadState(db, projectId);
   const found = before.proposals.find((p) => p.id === proposalId) ?? (() => { throw notFound("proposal"); })();
   if (found.status !== "open") throw new ApiError(409, "not_open", `that proposal is ${found.status}`);
-  await checkAnchors(blueprint, projectIn(before).blueprintProjectId, found.items);
+  // the anchors are re-read now (D4): each card is cut at the label and revision Blueprint shows at ACCEPT time, and a key that has left the spec → 422, nothing written
+  const reads = await checkAnchors(db, blueprint, projectIn(before), found.items);
   const ids = found.items.map(() => newId());
   const { state } = await writeDecided(db, projectId, (s) => {
     const p = s.proposals.find((x) => x.id === proposalId) ?? (() => { throw notFound("proposal"); })();
@@ -118,7 +122,7 @@ export async function accept(db: Db, blueprint: Blueprint, actor: Actor, proposa
     const first = Math.max(0, ...s.cards.map((c) => c.number)) + 1;
     return [
       ...p.items.map((item, i) => ({ type: "card.created" as const, projectId, actor, at, data: {
-        id: ids[i]!, number: first + i, title: item.title, todo: item.todo, anchor: item.anchor, assigneeId: item.workerId, dependsOn: item.dependsOn.map((j) => ids[j]!),
+        id: ids[i]!, number: first + i, title: item.title, todo: item.todo, anchor: cardAnchor(item.anchor.key, reads.get(item.anchor.key)!), assigneeId: item.workerId, dependsOn: item.dependsOn.map((j) => ids[j]!),
       } })),
       { type: "proposal.accepted" as const, projectId, actor, at, data: { proposalId, cardIds: ids } },
     ];

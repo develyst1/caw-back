@@ -1,7 +1,7 @@
 // TASK-A-079 / contract v1.4 + v1.6 (REQ-013): proposals of cards from the entry worker's chat hop, and the operator's accept.
 // Anchors are checked against Blueprint (the fake serves RECORDED answers); a proposal may anchor only on keys its hop LOCATED (v1.6).
 import { expect, test } from "bun:test";
-import { events } from "../../src/db/schema";
+import { events, specParts } from "../../src/db/schema";
 import { chatHop, chatWorld, hopHeader, postChat, setup } from "../helpers/api";
 
 async function world() {
@@ -34,15 +34,18 @@ test("propose (v1.6): only keys the hop located — a hop with no locate yet is 
   expect(await n()).toBe(afterLocate); // the refusal wrote nothing (the locate itself wrote one hop.located)
 });
 
-test("locate, then propose on a located key at the version LOCATE returned → 201 (the case Team C hit: DEC-001 @ the latest confirmed version)", async () => {
+// was: "…at the version LOCATE returned" (read `located.json.version`). REQ-105: locate answers with a `revision`, not a version; an item needs only the key (a `version` is ignored)
+// and is stored with the LABEL number CAW read (1 = the fake's label v1).
+test("locate, then propose on a located key (version omitted, or a wrong one) → 201; the item is stored with the label number CAW read (the case Team C hit: DEC-001)", async () => {
   const w = await world();
   const located = await w.locate();
   expect(located.status).toBe(200);
-  const version = located.json.version as number; // read from the locate answer — never hard-coded
+  expect(located.json.revision).toBe(1);
   expect(located.json.candidates.map((c: any) => c.key)).toContain("DEC-001");
-  const r = await w.propose([w.item({ title: "กฎห้องใหญ่", anchor: { key: "DEC-001", version } })]);
+  const r = await w.propose([w.item({ title: "กฎห้องใหญ่", anchor: { key: "DEC-001" } }), w.item({ anchor: { key: "STEP-004", version: 9 } })]); // was 422 version_not_confirmed for version 9
   expect([r.status, r.json.error]).toEqual([201, undefined]);
-  expect(r.json.items[0].anchor).toEqual({ key: "DEC-001", version });
+  expect(r.json.items.map((i: any) => i.anchor)).toEqual([{ key: "DEC-001", version: 1 }, { key: "STEP-004", version: 1 }]);
+  expect(r.json.version).toBe(1);
 });
 
 test("locate twice → the hop's locatedKeys is the UNION (order kept, no repeats); only keys, no spec text", async () => {
@@ -87,7 +90,7 @@ test("propose errors: validation 400 · not a chain member 400 · bad dependsOn 
   expect(await bad(Array.from({ length: 51 }, () => w.item()))).toBe(400);
   expect(await bad([w.item({ title: "" })])).toBe(400);
   expect(await bad([w.item({ hops: 0 })])).toBe(400);
-  expect(await bad([w.item({ anchor: { key: "STEP-004" } })])).toBe(400);
+  expect(await bad([w.item({ anchor: { version: 1 } })])).toBe(400); // was `{ key }` with no version → 400; a missing version is fine now (ignored), a missing key is not
   const stranger = (await w.call("POST", "/v1/workers", { name: "Zed", role: "BE", skills: ["x"] })).json;
   const nm = await w.propose([w.item({ workerId: stranger.id })]);
   expect([nm.status, nm.json.error.code]).toEqual([400, "not_a_member"]);
@@ -107,8 +110,7 @@ test("propose errors: validation 400 · not a chain member 400 · bad dependsOn 
   const wrong = await w.call("POST", `${w.P}/proposals`, { messageId: otherMsg.id, items: [w.item()] }, w.as, w.H); // her hop is on the first message
   expect([wrong.status, wrong.json.error.code]).toEqual([403, "not_your_message"]);
 
-  const gone = await w.propose([w.item({ anchor: { key: "STEP-004", version: 9 } })]);
-  expect([gone.status, gone.json.error.code]).toEqual([422, "version_not_confirmed"]);
+  // (was here: version 9 → 422 version_not_confirmed. REQ-105: the version is ignored — covered in the "no version sent" test above; the 422 left is anchor_not_in_version, below)
   await w.call("POST", `${w.P}/locate`, { request: "ห้องใหญ่ต้องอนุมัติ" }, w.as, w.H);
   w.fake.mode.gone.add("STEP-005"); // located, then removed from Blueprint (STEP-005 is a real part of v3: without this the call is accepted)
   const stale = await w.propose([w.item({ anchor: { key: "STEP-005", version: 3 } })]);
@@ -157,6 +159,8 @@ test("accept errors: a worker 403 operator_only · a runner refused · unknown 4
 
   const n = async () => (await w.db.select().from(events)).length;
   const before = await n();
+  // was: Blueprint down → 502. REQ-105 (D4): the parts were read when proposing, so an outage is served from spec_parts; the 502 now needs an empty cache (cleared here)
+  await w.db.delete(specParts);
   w.fake.mode.down = true;
   const down = await w.call("POST", A);
   expect([down.status, down.json.error.code]).toEqual([502, "blueprint_unreachable"]);

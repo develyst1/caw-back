@@ -3,7 +3,7 @@
 // No column holds Blueprint spec text — a card's anchor is { key, version }; `title` / `todo` / `note` are CAW's own words.
 import { sql } from "drizzle-orm";
 import type { CodeMapState } from "../core/reduce"; // a type only: the column holds what the reducer makes
-import { bigserial, check, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigserial, boolean, check, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const caw = pgSchema("caw");
 
@@ -40,6 +40,7 @@ export const projects = caw.table("projects", {
   hopsUsed: integer("hops_used").notNull().default(0),
   workspace: jsonb("workspace").$type<{ roots: string[]; readOnly?: string[] }>().notNull().default({ roots: [] }), // readOnly (v1.16) is optional here: a row from before it has none
   codeMap: jsonb("code_map").$type<CodeMapState>(), // v1.16: null until the entry worker saves one (migration 0009)
+  latestLabel: jsonb("latest_label").$type<{ version: number; label: string }>(), // REQ-105 (migration 0011): the latest label Blueprint showed; null = none. Replayed state
   entryWorkerId: uuid("entry_worker_id").references(() => workers.id),
   createdAt: at("created_at").notNull(),
 }, (t) => [
@@ -69,8 +70,11 @@ export const cards = caw.table("cards", {
   status: text("status").notNull(),
   assigneeId: uuid("assignee_id").references(() => workers.id),
   anchorKey: text("anchor_key").notNull(),
-  anchorVersion: integer("anchor_version").notNull(),
+  anchorVersion: integer("anchor_version").notNull(), // from REQ-105 on: the LABEL number when the card was cut (0 = none)
+  anchorLabel: text("anchor_label"), // REQ-105 (migration 0011): the label's words then; replayed state
+  anchorRevision: integer("anchor_revision").notNull().default(0), // REQ-105: the spec revision the card was cut at; replayed state
   specChangedVersion: integer("spec_changed_version"),
+  anchorRemovedRevision: integer("anchor_removed_revision"), // REQ-105 D12 (migration 0012): the spec revision at which the anchor part left the spec; null = it is there; replayed state
   question: jsonb("question"),
   answer: text("answer"),
   createdAt: at("created_at").notNull(),
@@ -191,6 +195,27 @@ export const followState = caw.table("follow_state", {
   projectId: uuid("project_id").primaryKey().references(() => projects.id),
   lastPulledVersion: integer("last_pulled_version").notNull(),
   lastPullAt: at("last_pull_at"),
+  lastPulledRevision: integer("last_pulled_revision").notNull().default(0), // REQ-105 (migration 0011): the spec revision the pull has got to — TASK-115 moves it
+  lastPullOk: boolean("last_pull_ok").notNull().default(true), // REQ-105: whether the last pull reached Blueprint — TASK-115 writes it
+});
+
+// Operational, not replayed (REQ-105, SPEC-107 D3): CAW now keeps the last body it read per part, because Blueprint serves no old revision
+// and a hop must keep the text it started with (AC-2), and a team must work on the last read when Blueprint is down (AC-5).
+export const specParts = caw.table("spec_parts", {
+  projectId: uuid("project_id").notNull().references(() => projects.id),
+  key: text("key").notNull(),
+  revision: integer("revision").notNull(),
+  body: jsonb("body").notNull(),
+  readAt: at("read_at").notNull(),
+}, (t) => [primaryKey({ columns: [t.projectId, t.key] })]);
+
+// The body a card hop was given at its start (SPEC-107 D5): `card_context` with that hop's X-CAW-Hop returns THIS, even after the hop ended.
+export const hopSpec = caw.table("hop_spec", {
+  hopId: uuid("hop_id").primaryKey().references(() => hops.id),
+  revision: integer("revision").notNull(),
+  body: jsonb("body").notNull(),
+  readAt: at("read_at").notNull(),
+  fromCache: boolean("from_cache").notNull(),
 });
 
 // Operational, not replayed (REQ-104): what a hop's CLI showed, rendered and redacted by the runner. Append-only by (hop_id, seq).

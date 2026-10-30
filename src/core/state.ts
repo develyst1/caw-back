@@ -13,7 +13,7 @@ export const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 
 const iso = (d: Date) => d.toISOString();
 const projectOf = (r: typeof projects.$inferSelect): ProjectState => ({
-  id: r.id, name: r.name, blueprintProjectId: r.blueprintProjectId, version: r.version, latestSeenVersion: r.latestSeenVersion,
+  id: r.id, name: r.name, blueprintProjectId: r.blueprintProjectId, version: r.version, latestSeenVersion: r.latestSeenVersion, latestLabel: r.latestLabel ?? null,
   mode: r.mode as ProjectState["mode"], hopBudget: r.hopBudget, hopsUsed: r.hopsUsed, workspace: { roots: r.workspace.roots, readOnly: r.workspace.readOnly ?? [] }, // a row from before v1.16 has no readOnly
   entryWorkerId: r.entryWorkerId, codeMap: r.codeMap ?? null, createdAt: iso(r.createdAt),
 });
@@ -22,7 +22,7 @@ const workerOf = (r: typeof workers.$inferSelect): WorkerState => ({
 });
 const cardOf = (r: typeof cards.$inferSelect): CardState => ({
   id: r.id, projectId: r.projectId, number: r.number, kind: r.kind as CardState["kind"], title: r.title, todo: r.todo, status: r.status as CardState["status"],
-  assigneeId: r.assigneeId, anchorKey: r.anchorKey, anchorVersion: r.anchorVersion, specChangedVersion: r.specChangedVersion,
+  assigneeId: r.assigneeId, anchorKey: r.anchorKey, anchorVersion: r.anchorVersion, anchorLabel: r.anchorLabel ?? null, anchorRevision: r.anchorRevision, specChangedVersion: r.specChangedVersion, anchorRemovedRevision: r.anchorRemovedRevision,
   question: r.question as CardState["question"], answer: r.answer, createdAt: iso(r.createdAt), updatedAt: iso(r.updatedAt),
 });
 const noteOf = (r: typeof notes.$inferSelect): NoteState => ({

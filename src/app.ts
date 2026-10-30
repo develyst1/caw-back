@@ -29,7 +29,7 @@ export function createApp(db: Db, deps: { blueprint?: Blueprint; follow?: Follow
   workerRoutes(app, db);
   chainRoutes(app, db);
   cardRoutes(app, db, blueprint);
-  hopRoutes(app, db);
+  hopRoutes(app, db, blueprint); // + blueprint: a card hop's spec is pinned at its start (REQ-105, SPEC-107 D5)
   outputRoutes(app, db);
   chatRoutes(app, db);
   proposalRoutes(app, db, blueprint);

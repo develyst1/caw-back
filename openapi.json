@@ -34,6 +34,7 @@
                 "type": "string"
               },
               "version": {
+                "description": "from REQ-105 on: the LABEL number when the card was cut (0 = no label then)",
                 "type": "integer"
               }
             },
@@ -42,6 +43,17 @@
               "version"
             ],
             "type": "object"
+          },
+          "anchorLabel": {
+            "description": "the label's words when the card was cut (REQ-105); null = none",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchorRemoved": {
+            "description": "true while the card's anchor part is not in Blueprint's spec (REQ-105 D12): the card is not workable and its context answers 404 anchor_removed",
+            "type": "boolean"
           },
           "answer": {
             "type": [
@@ -167,7 +179,9 @@
           "status",
           "assigneeId",
           "anchor",
+          "anchorLabel",
           "specChangedVersion",
+          "anchorRemoved",
           "dependsOn",
           "question",
           "answer",
@@ -227,11 +241,40 @@
             "type": "array"
           },
           "spec": {
-            "description": "Blueprint's PartContext, exactly as its seam returned it"
+            "description": "Blueprint's v2 part context (SPEC-106 route 2: `revision`, `savedAt`, `latestLabel`, …), exactly as returned — the text the hop was pinned with when `specRead.pinned`"
+          },
+          "specRead": {
+            "description": "where `spec` came from (REQ-105)",
+            "properties": {
+              "fromCache": {
+                "description": "Blueprint could not be reached and the last body read was served",
+                "type": "boolean"
+              },
+              "pinned": {
+                "description": "this is the text the calling hop was given at its start",
+                "type": "boolean"
+              },
+              "readAt": {
+                "description": "when CAW read it",
+                "type": "string"
+              },
+              "revision": {
+                "description": "the spec revision `spec` was read at",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision",
+              "readAt",
+              "fromCache",
+              "pinned"
+            ],
+            "type": "object"
           }
         },
         "required": [
           "card",
+          "specRead",
           "notes",
           "decisions",
           "codeMap"
@@ -877,7 +920,27 @@
           "id": {
             "type": "string"
           },
+          "latestLabel": {
+            "description": "the latest label Blueprint showed: its number and words; null = none (REQ-105)",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "version",
+              "label"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "latestSeenVersion": {
+            "description": "the latest label number seen (0 = none)",
             "type": "integer"
           },
           "mode": {
@@ -890,7 +953,34 @@
           "name": {
             "type": "string"
           },
+          "spec": {
+            "description": "REQ-105: how up to date CAW's view of the spec is",
+            "properties": {
+              "lastPullAt": {
+                "description": "when a pull last got through; null = never",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reachable": {
+                "description": "false when the last pull could not reach Blueprint; it catches up on its own when Blueprint is back",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "the spec revision the follower has pulled to (0 = nothing pulled yet)",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision",
+              "reachable",
+              "lastPullAt"
+            ],
+            "type": "object"
+          },
           "version": {
+            "description": "from REQ-105 on: the LABEL number when the project started (0 = no label then)",
             "type": "integer"
           },
           "workspace": {
@@ -922,13 +1012,15 @@
           "blueprintProjectId",
           "version",
           "latestSeenVersion",
+          "latestLabel",
           "mode",
           "hopBudget",
           "hopsUsed",
           "entryWorkerId",
           "workspace",
           "codeMap",
-          "createdAt"
+          "createdAt",
+          "spec"
         ],
         "type": "object"
       },
@@ -989,7 +1081,7 @@
                       "type": "string"
                     },
                     "version": {
-                      "minimum": 1,
+                      "minimum": 0,
                       "type": "integer"
                     }
                   },
@@ -2616,36 +2708,84 @@
           "content": {
             "application/json": {
               "schema": {
-                "properties": {
-                  "confirmedAt": {
-                    "type": "string"
-                  },
-                  "event": {
-                    "enum": [
-                      "version.confirmed"
+                "anyOf": [
+                  {
+                    "properties": {
+                      "confirmedAt": {
+                        "type": "string"
+                      },
+                      "event": {
+                        "enum": [
+                          "version.confirmed"
+                        ],
+                        "type": "string"
+                      },
+                      "projectId": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "version": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "event",
+                      "projectId",
+                      "version",
+                      "confirmedAt"
                     ],
-                    "type": "string"
+                    "type": "object"
                   },
-                  "projectId": {
-                    "minLength": 1,
-                    "type": "string"
+                  {
+                    "properties": {
+                      "at": {
+                        "type": "string"
+                      },
+                      "event": {
+                        "enum": [
+                          "spec.changed"
+                        ],
+                        "type": "string"
+                      },
+                      "projectId": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "revision": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "event",
+                      "projectId",
+                      "revision",
+                      "at"
+                    ],
+                    "type": "object"
                   },
-                  "version": {
-                    "minimum": 1,
-                    "type": "integer"
+                  {
+                    "properties": {
+                      "event": {
+                        "type": "string"
+                      },
+                      "projectId": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "event",
+                      "projectId"
+                    ],
+                    "type": "object"
                   }
-                },
-                "required": [
-                  "event",
-                  "projectId",
-                  "version",
-                  "confirmedAt"
-                ],
-                "type": "object"
+                ]
               }
             }
           },
-          "description": "Blueprint's notice",
+          "description": "Blueprint's notice: version.confirmed, spec.changed, or any other event (accepted, ignored)",
           "required": true
         },
         "responses": {
@@ -2658,7 +2798,7 @@
                 }
               }
             },
-            "description": "accepted — the pull for that Blueprint project runs now, in the background"
+            "description": "accepted — for version.confirmed and spec.changed the pull for that Blueprint project runs now, in the background; any other event does nothing"
           },
           "400": {
             "content": {
@@ -2735,19 +2875,18 @@
                     "type": "string"
                   },
                   "version": {
-                    "minimum": 1,
+                    "minimum": 0,
                     "type": "integer"
                   }
                 },
                 "required": [
-                  "blueprintProjectId",
-                  "version"
+                  "blueprintProjectId"
                 ],
                 "type": "object"
               }
             }
           },
-          "description": "a confirmed Blueprint version — one CAW project per Blueprint project: 409 already_exists { id } when one exists, at any version (the project follows newer versions itself)",
+          "description": "a Blueprint project — one CAW project per Blueprint project: 409 already_exists { id } when one exists (the project follows the spec itself)",
           "required": true
         },
         "responses": {
@@ -3061,13 +3200,12 @@
                         "type": "string"
                       },
                       "version": {
-                        "minimum": 1,
+                        "minimum": 0,
                         "type": "integer"
                       }
                     },
                     "required": [
-                      "key",
-                      "version"
+                      "key"
                     ],
                     "type": "object"
                   },
@@ -3098,7 +3236,7 @@
               }
             }
           },
-          "description": "a card, anchored to a part of a confirmed Blueprint version",
+          "description": "a card, anchored to a part of Blueprint's current spec",
           "required": true
         },
         "responses": {
@@ -4331,8 +4469,11 @@
             "name": "version",
             "required": false,
             "schema": {
-              "minimum": 1,
-              "type": "integer"
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           }
         ],
@@ -4341,11 +4482,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "description": "Blueprint's PartContext, exactly as returned — never stored"
+                  "description": "Blueprint's v2 part context, exactly as returned (the last body read when Blueprint is down)"
                 }
               }
             },
-            "description": "the part at that version"
+            "description": "the part in the current spec"
           },
           "400": {
             "content": {
@@ -4460,13 +4601,12 @@
                               "type": "string"
                             },
                             "version": {
-                              "minimum": 1,
+                              "minimum": 0,
                               "type": "integer"
                             }
                           },
                           "required": [
-                            "key",
-                            "version"
+                            "key"
                           ],
                           "type": "object"
                         },

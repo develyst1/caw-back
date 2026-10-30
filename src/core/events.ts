@@ -21,6 +21,10 @@ export const EVENT_TYPES = [
   "worker.deleted",
   // v1.16 (REQ-015 R2a): the setup step's result — the structured code map — written by the entry worker, confirmed by the operator
   "project.code_map_saved", "project.code_map_confirmed",
+  // REQ-105 (SPEC-107 D6): one per pull that flagged a card or saw a new label — the spec revision it got to
+  "spec.revised",
+  // REQ-105 D12: the pull saw a card's anchor part leave the spec / come back
+  "card.anchor_removed", "card.anchor_restored",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
@@ -53,7 +57,8 @@ export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_tw
 // existing card — they are given when a card is created: card.created / card.question_opened) and `project.budget_set`
 // (PATCH …/mode sets the mode and, optionally, the budget in ONE event: project.mode_set).
 export type CawEvent = Header & (
-  | { type: "project.created"; data: { id: string; name: string; blueprintProjectId: string; version: number } }
+  // REQ-105 (SPEC-107 D2/D11): `version` is the LABEL number at start (0 = none); `latestLabel` and `revision` are optional — an event from before it has neither (→ null / 0)
+  | { type: "project.created"; data: { id: string; name: string; blueprintProjectId: string; version: number; latestLabel?: { version: number; label: string } | null; revision?: number } }
   | { type: "worker.created"; data: WorkerData | LegacyWorkerData }
   | { type: "worker.combined"; data: (WorkerData | LegacyWorkerData) & { combinedFrom: [string, string] } }
   | { type: "worker.updated"; data: { id: string } & WorkerPatch }
@@ -62,7 +67,8 @@ export type CawEvent = Header & (
   | { type: "chain.member_removed"; data: { workerId: string; reassignTo: string | null } }
   | { type: "chain.edge_added" | "chain.edge_removed"; data: { from: string; to: string } }
   | { type: "chain.entry_set"; data: { workerId: string } }
-  | { type: "card.created"; data: { id: string; number: number; title: string; todo: string; anchor: { key: string; version: number }; assigneeId: string | null; dependsOn: string[] } }
+  // REQ-105: anchor.version = the label number when the card was cut (0 = none); `label` (its words) and `revision` (the spec revision) are optional — absent in an older event → null / 0
+  | { type: "card.created"; data: { id: string; number: number; title: string; todo: string; anchor: { key: string; version: number; label?: string | null; revision?: number }; assigneeId: string | null; dependsOn: string[] } }
   | { type: "card.status_set"; data: { cardId: string; status: CardStatus } }
   | { type: "card.assigned"; data: { cardId: string; workerId: string } }
   | { type: "card.handed_off"; data: { cardId: string; fromWorkerId: string | null; toWorkerId: string; noteId: string; text: string } }
@@ -74,6 +80,10 @@ export type CawEvent = Header & (
   | { type: "card.spec_change_cleared"; data: { cardId: string } }
   // ONE event per Blueprint version the pull has seen: the cards it flags (possibly none) and the new latestSeenVersion
   | { type: "card.spec_changed"; data: { version: number; cardIds: string[] } }
+  // REQ-105 (D6): `revision` = the newest change set the pull saw; the cards in `cardIds` get it as specChangedVersion; the project takes `latestLabel`. No spec text.
+  | { type: "spec.revised"; data: { revision: number; latestLabel: { version: number; label: string } | null; cardIds: string[] } }
+  // REQ-105 D12: `revision` = the change set that removed the part / brought it back
+  | { type: "card.anchor_removed" | "card.anchor_restored"; data: { cardIds: string[]; revision: number } }
   | { type: "project.mode_set"; data: { mode: Mode; hopBudget: number | null } }
   | { type: "project.workspace_set"; data: { roots: string[]; readOnly?: string[] } } // readOnly ⊆ roots (v1.16); an event from before it has none → []
   | { type: "project.code_map_saved"; data: CodeMapInput & { hopId: string } }

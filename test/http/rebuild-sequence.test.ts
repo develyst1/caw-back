@@ -87,7 +87,10 @@ test("AC-6 with mode, budget, workspace, runs, claims, hops and spec changes: re
   await call("PATCH", `/v1/hops/${h2.id}`, { claim: "runner-2" });
   await call("PATCH", `/v1/hops/${h2.id}`, { outcome: "interrupted" });
   await call("PATCH", `/v1/cards/${cards[1].id}/status`, { status: "review" });
-  await follow.pullAll(); // spec changes of v2 and v3 → cards[0] and cards[2]
+  // REQ-105: the pull follows REVISIONS (was: the recorded v2/v3 feed). Synthetic change sets 2 (STEP-004) and 3 (STEP-001) → one spec.revised flags cards[0] and cards[2] with revision 3
+  for (const [rev, key] of [[2, "STEP-004"], [3, "STEP-001"]] as const) fake.mode.changes.push({ rev, at: "2026-10-29T07:00:00.000Z", by: "โด่ง", cause: "edit", added: [], changed: [key], removed: [] });
+  fake.mode.spec.revision = 3;
+  await follow.pullAll();
   await call("POST", `/v1/cards/${cards[0].id}/spec-change/clear`);
   await call("PATCH", `/v1/runs/${run.id}`, { stopReason: "operator_stopped", report: "หยุดเอง" });
   void fake;
@@ -103,9 +106,9 @@ test("AC-6 with mode, budget, workspace, runs, claims, hops and spec changes: re
   console.log("AC-6 rebuilt:", JSON.stringify(view(rebuilt)));
   expect(view(rebuilt)).toEqual(view(tables));
   expect(view(tables)).toEqual({
-    mode: "dispatcher", hopBudget: 4, hopsUsed: 2, workspace: ["/work/app", "/work/web"], latestSeenVersion: 3,
+    mode: "dispatcher", hopBudget: 4, hopsUsed: 2, workspace: ["/work/app", "/work/web"], latestSeenVersion: 1, // the label number (D2) — the fake's label is v1; it did not change
     statuses: ["1:todo:-", "2:review:-", "3:todo:3"], hops: ["commented:runner-1:run", "interrupted:runner-2:run"], runs: ["operator_stopped:3"],
   });
   const types = new Set((await db.select({ type: events.type }).from(events)).map((e) => e.type));
-  for (const t of ["project.mode_set", "project.workspace_set", "run.started", "run.finished", "hop.started", "hop.claimed", "hop.finished", "card.spec_changed"]) expect([t, types.has(t)]).toEqual([t, true]);
+  for (const t of ["project.mode_set", "project.workspace_set", "run.started", "run.finished", "hop.started", "hop.claimed", "hop.finished", "spec.revised"]) expect([t, types.has(t)]).toEqual([t, true]);
 });

@@ -1,6 +1,6 @@
 // The seam proxy (SPEC-A-008 v1.4): `locate` and `amendments` go to Blueprint through CAW. The caller is the operator, or a worker holding
-// a running chat hop on some message of the project. Blueprint's answer is passed on AS RETURNED; CAW keeps NO spec text — a worker's hop
-// keeps only the located KEYS (hop.located, v1.6). Blueprint not answering → 502.
+// a running chat hop on some message of the project. Blueprint's answer is passed on AS RETURNED; a chat hop keeps only the located KEYS
+// (hop.located, v1.6) — the part text CAW saves is only what blueprint/latest.ts reads for a card (REQ-105). Blueprint not answering → 502.
 import type { Blueprint } from "../blueprint/client";
 import { chatHopOf } from "../chat/guard";
 import type { Actor } from "../core/events";
@@ -19,7 +19,7 @@ async function project(db: Db, projectId: string) {
 export async function locate(db: Db, blueprint: Blueprint, actor: Actor, hopId: string | null, projectId: string, request: string): Promise<unknown> {
   const { s, project: p } = await project(db, projectId);
   const hop = workerIdOf(actor) === null ? null : chatHopOf(s, actor, hopId);
-  const located = await blueprint.locate(p.blueprintProjectId, request);
+  const located = await blueprint.specLocate(p.blueprintProjectId, request); // REQ-105 (D1): against the CURRENT spec — v1 `locate` refuses a project with no label (AC-3)
   const keys = ((located as { candidates?: { key: string }[] }).candidates ?? []).map((c) => c.key);
   if (hop && keys.length) {
     // the hop keeps the keys, not the result; the hop must still be running when they are written

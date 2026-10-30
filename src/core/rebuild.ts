@@ -15,6 +15,7 @@ const HANDLED = new Set<string>([
   "card.question_answered", "card.spec_change_cleared", "card.handoff_refused", "card.spec_changed", "project.mode_set", "project.workspace_set",
   "run.started", "run.finished", "hop.started", "hop.claimed", "hop.finished",
   "chat.posted", "chat.replied", "hop.located", "proposal.made", "proposal.accepted", "chat.retry_requested", "worker.updated", "hop.heartbeat", "worker.deleted", "project.code_map_saved", "project.code_map_confirmed",
+  "spec.revised", "card.anchor_removed", "card.anchor_restored",
 ] satisfies (typeof EVENT_TYPES)[number][]);
 
 export async function rebuild(db: Db, projectId: string, each?: (event: CawEvent) => void): Promise<State> {

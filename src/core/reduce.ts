@@ -7,6 +7,8 @@ import type { CardStatus, CawEvent, ChatQuestion, CodeMapInput, HopOutcome, Mode
 export type CodeMapState = CodeMapInput & { updatedAt: string; updatedBy: string; confirmedAt: string | null };
 export type ProjectState = {
   id: string; name: string; blueprintProjectId: string; version: number; latestSeenVersion: number;
+  /** REQ-105 (SPEC-107 D2): the latest label Blueprint showed us; `version`/`latestSeenVersion` are label NUMBERS now (0 = none). null = no label yet / an old project */
+  latestLabel: { version: number; label: string } | null;
   mode: Mode; hopBudget: number; hopsUsed: number; workspace: { roots: string[]; readOnly: string[] /* v1.16: ⊆ roots; the rest are writable */ };
   entryWorkerId: string | null; codeMap: CodeMapState | null; createdAt: string;
 };
@@ -15,7 +17,8 @@ export type WorkerState = {
 };
 export type CardState = {
   id: string; projectId: string; number: number; kind: "work" | "question"; title: string; todo: string; status: CardStatus;
-  assigneeId: string | null; anchorKey: string; anchorVersion: number; specChangedVersion: number | null;
+  assigneeId: string | null; anchorKey: string; anchorVersion: number; anchorLabel: string | null; anchorRevision: number; specChangedVersion: number | null;
+  /** REQ-105 D12: the revision at which the anchor part was removed from the spec; null = it is in the spec (the pull writes card.anchor_removed / card.anchor_restored) */ anchorRemovedRevision: number | null;
   question: { text: string; proposedDefault: string; cases: string[] } | null; answer: string | null; createdAt: string; updatedAt: string;
 };
 export type NoteState = {
@@ -85,7 +88,7 @@ export function reduce(state: State, event: CawEvent): State {
       if (state.project) throw new Error("project.created twice");
       const d = event.data;
       return { ...state, project: {
-        id: d.id, name: d.name, blueprintProjectId: d.blueprintProjectId, version: d.version, latestSeenVersion: d.version,
+        id: d.id, name: d.name, blueprintProjectId: d.blueprintProjectId, version: d.version, latestSeenVersion: d.version, latestLabel: d.latestLabel ?? null,
         mode: "manual", hopBudget: 0, hopsUsed: 0, workspace: { roots: [], readOnly: [] }, entryWorkerId: null, codeMap: null, createdAt: event.at,
       } };
     }
@@ -129,7 +132,7 @@ export function reduce(state: State, event: CawEvent): State {
       const d = event.data;
       const card: CardState = {
         id: d.id, projectId: event.projectId!, number: d.number, kind: "work", title: d.title, todo: d.todo, status: "todo",
-        assigneeId: d.assigneeId, anchorKey: d.anchor.key, anchorVersion: d.anchor.version, specChangedVersion: null,
+        assigneeId: d.assigneeId, anchorKey: d.anchor.key, anchorVersion: d.anchor.version, anchorLabel: d.anchor.label ?? null, anchorRevision: d.anchor.revision ?? 0, specChangedVersion: null, anchorRemovedRevision: null,
         question: null, answer: null, createdAt: event.at, updatedAt: event.at,
       };
       return { ...state, cards: [...state.cards, card], deps: [...state.deps, ...d.dependsOn.map((dependsOnId) => ({ cardId: d.id, dependsOnId }))] };
@@ -158,7 +161,7 @@ export function reduce(state: State, event: CawEvent): State {
       const asking = state.cards.find((c) => c.id === d.askingCardId)!;
       const card: CardState = {
         id: d.id, projectId: event.projectId!, number: d.number, kind: "question", title: d.text.slice(0, 200), todo: "", status: "todo",
-        assigneeId: null, anchorKey: asking.anchorKey, anchorVersion: asking.anchorVersion, specChangedVersion: null,
+        assigneeId: null, anchorKey: asking.anchorKey, anchorVersion: asking.anchorVersion, anchorLabel: asking.anchorLabel, anchorRevision: asking.anchorRevision, specChangedVersion: null, anchorRemovedRevision: null,
         question: { text: d.text, proposedDefault: d.proposedDefault, cases: [...d.cases] }, answer: null, createdAt: event.at, updatedAt: event.at,
       };
       return { ...state, cards: [...state.cards, card], deps: [...state.deps, { cardId: d.askingCardId, dependsOnId: d.id }] };
@@ -176,6 +179,22 @@ export function reduce(state: State, event: CawEvent): State {
         cards: state.cards.map((c) => (cardIds.includes(c.id) ? { ...c, specChangedVersion: version, updatedAt: event.at } : c)),
         project: state.project && { ...state.project, latestSeenVersion: version },
       };
+    }
+    // REQ-105 (D6): the pull's one event per flagged round — the card flag holds the revision, the project the latest label (its number; 0 = none)
+    case "spec.revised": {
+      const { revision, latestLabel, cardIds } = event.data;
+      return {
+        ...state,
+        cards: state.cards.map((c) => (cardIds.includes(c.id) ? { ...c, specChangedVersion: revision, updatedAt: event.at } : c)),
+        project: state.project && { ...state.project, latestLabel, latestSeenVersion: latestLabel?.version ?? 0 },
+      };
+    }
+    // REQ-105 D12: the anchor part is gone from the spec (the card cannot be worked) / back in it
+    case "card.anchor_removed":
+    case "card.anchor_restored": {
+      const { cardIds, revision } = event.data;
+      const value = event.type === "card.anchor_removed" ? revision : null;
+      return { ...state, cards: state.cards.map((c) => (cardIds.includes(c.id) ? { ...c, anchorRemovedRevision: value, updatedAt: event.at } : c)) };
     }
     // R6: switching never resets anything — only the mode (and a budget, when one is sent) changes
     case "project.mode_set":

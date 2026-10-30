@@ -8,7 +8,8 @@ import { chainOf3, hopHeader, newCard, openHop, setup } from "../helpers/api";
 const fix = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/blueprint/${name}.json`, import.meta.url), "utf8"));
 const as = (w: { id: string }) => `worker:${w.id}`;
 
-test("AC-2 anchor: no anchor → 400 anchor_required · a key not in v1 → 422 anchor_not_in_version · an unconfirmed version → 422 version_not_confirmed", async () => {
+// was: "…a key not in v1 → 422 anchor_not_in_version · an unconfirmed version → 422 version_not_confirmed". REQ-105 (D2/D4): the key is checked against the CURRENT spec; a `version` in the body is ignored (no 422 any more).
+test("AC-2 anchor: no anchor → 400 anchor_required · a key not in the current spec → 422 anchor_not_in_version · a `version` Blueprint never confirmed is ignored (the card is cut at the current label)", async () => {
   const { call } = await setup();
   const { project } = await chainOf3(call);
   const P = `/v1/projects/${project.id}/cards`;
@@ -19,9 +20,9 @@ test("AC-2 anchor: no anchor → 400 anchor_required · a key not in v1 → 422 
   expect((await call("POST", P, { title: "t", todo: "x".repeat(8001), anchor: { key: "STEP-004", version: 1 } })).status).toBe(400);
   const nokey = await newCard(call, project.id, { anchor: { key: "NOPE-999", version: 1 } });
   expect([nokey.status, nokey.json.error.code]).toEqual([422, "anchor_not_in_version"]);
-  const nov = await newCard(call, project.id, { anchor: { key: "STEP-004", version: 9 } });
-  expect([nov.status, nov.json.error.code]).toEqual([422, "version_not_confirmed"]);
   expect((await call("GET", `/v1/projects/${project.id}/cards`)).json.cards).toEqual([]); // the refused ones wrote nothing
+  const nov = await newCard(call, project.id, { anchor: { key: "STEP-004", version: 9 } }); // was 422 version_not_confirmed
+  expect([nov.status, nov.json.anchor, nov.json.anchorLabel]).toEqual([201, { key: "STEP-004", version: 1 }, "v1"]);
 });
 
 test("POST cards: 201 Card (number from 1, todo, workable, anchor) · assignee must be a member · operator only · Blueprint down → 502", async () => {
@@ -31,9 +32,9 @@ test("POST cards: 201 Card (number from 1, todo, workable, anchor) · assignee m
   expect(r.status).toBe(201);
   expect(r.json).toMatchObject({
     projectId: project.id, number: 1, kind: "work", title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004", status: "todo", assigneeId: a.id,
-    anchor: { key: "STEP-004", version: 1 }, specChangedVersion: null, dependsOn: [], question: null, answer: null, workable: true,
+    anchor: { key: "STEP-004", version: 1 }, anchorLabel: "v1", specChangedVersion: null, dependsOn: [], question: null, answer: null, workable: true,
   });
-  expect(Object.keys(r.json).sort()).toEqual(["anchor", "answer", "assigneeId", "createdAt", "dependsOn", "id", "kind", "number", "projectId", "question", "specChangedVersion", "status", "stoppedMidway", "title", "todo", "updatedAt", "workable"]); // + stoppedMidway (TASK-119, SPEC-108 D7)
+  expect(Object.keys(r.json).sort()).toEqual(["anchor", "anchorLabel", "anchorRemoved", "answer", "assigneeId", "createdAt", "dependsOn", "id", "kind", "number", "projectId", "question", "specChangedVersion", "status", "stoppedMidway", "title", "todo", "updatedAt", "workable"]); // + stoppedMidway (TASK-119, SPEC-108 D7)
   expect(r.json.stoppedMidway).toBeNull();
   expect((await newCard(call, project.id)).json).toMatchObject({ number: 2, assigneeId: null });
   const stranger = (await call("POST", "/v1/workers", { name: "Zed", role: "BE", skills: ["x"] })).json;
@@ -42,8 +43,10 @@ test("POST cards: 201 Card (number from 1, todo, workable, anchor) · assignee m
   const w = await newCard(call, project.id, {}).then(() => call("POST", `/v1/projects/${project.id}/cards`, { title: "t", todo: "", anchor: { key: "STEP-004", version: 1 } }, as(a)));
   expect([w.status, w.json.error.code]).toEqual([403, "operator_only"]);
   expect((await newCard(call, "00000000-0000-0000-0000-000000000099")).status).toBe(404);
+  // was: Blueprint down → 502 for STEP-004. REQ-105 (D4): a part CAW has read before is served from the last body read (AC-5), so a card on it can still be cut; a part it never read → 502 as before
   fake.mode.down = true;
-  const down = await newCard(call, project.id);
+  expect((await newCard(call, project.id)).status).toBe(201); // STEP-004 was read by the cards above
+  const down = await newCard(call, project.id, { anchor: { key: "STEP-005" } });
   expect([down.status, down.json.error.code]).toEqual([502, "blueprint_unreachable"]);
 });
 
@@ -79,7 +82,8 @@ test("GET cards: filters assigneeId · status · workable=true; GET card by id; 
   expect((await call("GET", "/v1/projects/00000000-0000-0000-0000-000000000099/cards")).status).toBe(404);
 });
 
-test("AC-3 context: spec = Blueprint's PartContext exactly as the real seam returned it (STEP-004 @ v1) + the card's notes, oldest first; 502 when Blueprint is down", async () => {
+// was: "spec = Blueprint's PartContext … (STEP-004 @ v1) … 502 when Blueprint is down". REQ-105: the v2 context of the current spec (+ specRead); Blueprint down → the last body read (fromCache); 502 only when the part is gone/never read.
+test("AC-3 context: spec = Blueprint's v2 part context exactly as returned (STEP-004, current spec) + specRead + the card's notes, oldest first; Blueprint down → the last body read; 404 anchor_removed when the part has left the spec", async () => {
   const { call, fake } = await setup();
   const { project, a } = await chainOf3(call);
   const card = (await newCard(call, project.id, { assigneeId: a.id })).json;
@@ -87,16 +91,25 @@ test("AC-3 context: spec = Blueprint's PartContext exactly as the real seam retu
   await call("POST", `/v1/cards/${card.id}/comments`, { text: "เริ่มแล้ว" });
   await call("POST", `/v1/cards/${card.id}/comments`, { text: "เจอข้อสงสัย" }, as(a), hopHeader(hop.id));
   const ctx = (await call("GET", `/v1/cards/${card.id}/context`)).json;
-  expect(ctx.spec).toEqual(fix("context-v1-step-004"));
+  const { version: _v, confirmedAt: _c, ...recorded } = fix("context-v1-step-004"); // synthetic v2 = the recorded v1 context with revision / savedAt / latestLabel instead of version / confirmedAt
+  expect(ctx.spec).toMatchObject({ ...recorded, revision: 1, latestLabel: { version: 1, label: "v1" } });
+  expect(ctx.spec.version).toBeUndefined();
+  expect(ctx.spec.confirmedAt).toBeUndefined();
+  expect(ctx.specRead).toMatchObject({ revision: 1, fromCache: false, pinned: false }); // the operator has no hop: the latest read
+  expect(typeof ctx.specRead.readAt).toBe("string");
   expect(ctx.card).toMatchObject({ id: card.id, number: 1 });
   expect(ctx.notes.map((n: any) => [n.type, n.actor, n.text])).toEqual([["comment", "operator", "เริ่มแล้ว"], ["comment", as(a), "เจอข้อสงสัย"]]);
   expect(Object.keys(ctx.notes[0]).sort()).toEqual(["actor", "allowed", "at", "fromWorkerId", "id", "text", "toWorkerId", "type"]);
   expect(ctx.notes[0].allowed).toBeNull(); // allowed is only for a handoff_refused note (v1.3)
   expect(ctx.decisions).toEqual([]);
-  expect(fake.mode.calls.at(-1)).toBe(`GET /v1/projects/${fix("project-200").project.id}/versions/1/parts/STEP-004/context`);
+  expect(fake.mode.calls.at(-1)).toBe(`GET /v1/projects/${fix("project-200").project.id}/spec/parts/STEP-004/context`);
   fake.mode.down = true;
-  const down = await call("GET", `/v1/cards/${card.id}/context`);
-  expect([down.status, down.json.error.code]).toEqual([502, "blueprint_unreachable"]);
+  const down = await call("GET", `/v1/cards/${card.id}/context`); // was 502
+  expect([down.status, down.json.specRead.fromCache, down.json.spec]).toEqual([200, true, ctx.spec]);
+  fake.mode.down = false;
+  fake.mode.gone.add("STEP-004"); // the part has left the current spec: nothing to give the worker
+  const gone = await call("GET", `/v1/cards/${card.id}/context`);
+  expect([gone.status, gone.json.error.code]).toEqual([404, "anchor_removed"]); // was 502 blueprint_unreachable — REQ-105 D12 (Q4): a removed part has its own answer
   expect((await call("GET", "/v1/cards/00000000-0000-0000-0000-000000000099/context")).status).toBe(404);
 });
 
@@ -232,12 +245,13 @@ test("AC-7 question card: the asking card stops being workable, an unrelated car
   expect(ctx.decisions).toEqual([{ cardId: q.json.id, number: 3, question: body.text, answer: "ใช่ ต้องอนุมัติ" }]);
 });
 
-test("spec-change/clear: operator only; sets specChangedVersion back to null so the card is workable again", async () => {
+// was: "…so the card is workable again" (flagged: workable false). REQ-105 D7 (PM's Q2): the flag only SHOWS — a flagged card is still workable; `clear` just dismisses the mark.
+test("spec-change/clear: operator only; sets specChangedVersion back to null (the mark goes; the card was workable all along — the flag no longer stops it)", async () => {
   const { call, db } = await setup();
   const { project, a } = await chainOf3(call);
   const card = (await newCard(call, project.id, { assigneeId: a.id })).json;
   await db.execute(sql`update caw.cards set spec_changed_version = 2 where id = ${card.id}`); // what A-073's pull will write
-  expect((await call("GET", `/v1/cards/${card.id}`)).json).toMatchObject({ specChangedVersion: 2, workable: false });
+  expect((await call("GET", `/v1/cards/${card.id}`)).json).toMatchObject({ specChangedVersion: 2, workable: true }); // was workable: false
   expect((await call("POST", `/v1/cards/${card.id}/spec-change/clear`, undefined, as(a))).json.error.code).toBe("operator_only");
   const r = await call("POST", `/v1/cards/${card.id}/spec-change/clear`);
   expect(r.status).toBe(200);

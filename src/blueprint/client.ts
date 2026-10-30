@@ -1,6 +1,6 @@
 // The seam CAW calls (SPEC-A-008 § What I read): Blueprint's read API. A 404 is `null` (the thing does not exist);
 // a network error, a 5xx or any other status is `BlueprintUnreachable` — never a null that reads as "not found".
-// Spec content is only ever passed through (partContext), never kept.
+// Spec content is passed through as returned. Since REQ-105 (SPEC-107 D3) a part's last-read body is kept in two operational tables — blueprint/latest.ts — and nowhere else.
 export class BlueprintUnreachable extends Error {
   constructor(readonly reason: string) { super(`blueprint_unreachable (${reason})`); }
 }
@@ -12,8 +12,24 @@ export type VersionFeed = {
   changedSinceLatest: boolean;
 };
 
+/** SPEC-106 § Seam contract v2: a label is a tag on a moment of the spec, not a gate */
+export type LatestLabel = { version: number; label: string; labelledAt?: string; by?: string };
+/** SPEC-106 route 1 — the current spec in one read; `revision` counts change sets (0 = none yet) */
+export type SpecSnapshot = { projectId: string; revision: number; savedAt: string | null; latestLabel: LatestLabel | null; parts: unknown[]; links: unknown[] };
+/** SPEC-106 route 4 — one entry per change set after `after`, ascending; `more` = ask again from the last `rev` */
+export type SpecChange = { rev: number; at: string; by: string | null; cause: string; added: string[]; changed: string[]; removed: string[] };
+export type SpecChanges = { revision: number; latestLabel: LatestLabel | null; changes: SpecChange[]; more?: boolean };
+
 export type Blueprint = {
   getProject(bp: string): Promise<{ name: string } | null>;
+  /** v2 route 1 (SPEC-107 D1): the current spec, or null (404 = no such project); anything else but a 200 is `BlueprintUnreachable` */
+  spec(bp: string): Promise<SpecSnapshot | null>;
+  /** v2 route 2: Blueprint's context for one part of the CURRENT spec exactly as returned (`revision`, `savedAt`, `latestLabel`, …), or null (404 = the key is not live) */
+  specContext(bp: string, key: string): Promise<unknown | null>;
+  /** v2 route 3: Blueprint's `Located` against the current spec, as returned; anything but a 200 is `BlueprintUnreachable` */
+  specLocate(bp: string, request: string): Promise<unknown>;
+  /** v2 route 4: what changed after a revision. A 404 (no such project) is `BlueprintUnreachable`, like `versionsAfter` */
+  specChanges(bp: string, after: number): Promise<SpecChanges>;
   getVersion(bp: string, version: number): Promise<{ version: number; confirmedAt: string } | null>;
   /** Blueprint's PartContext exactly as returned, or null (404) */
   partContext(bp: string, version: number, key: string): Promise<unknown | null>;
@@ -68,6 +84,18 @@ export function createBlueprint(baseUrl: string = defaultBlueprintUrl()): Bluepr
       return body ? { version: body.version, confirmedAt: body.confirmedAt } : null;
     },
     partContext: (bp, version, key) => get(`/v1/projects/${id(bp)}/versions/${version}/parts/${id(key)}/context`),
+    async spec(bp) { return (await get(`/v1/projects/${id(bp)}/spec`)) as SpecSnapshot | null; },
+    specContext: (bp, key) => get(`/v1/projects/${id(bp)}/spec/parts/${id(key)}/context`),
+    async specLocate(bp, request) {
+      const r = await post(`/v1/projects/${id(bp)}/spec/locate`, { request });
+      if (r.status !== 200 || r.json === null) throw new BlueprintUnreachable(`status ${r.status}`);
+      return r.json;
+    },
+    async specChanges(bp, after) {
+      const body = await get(`/v1/projects/${id(bp)}/spec/changes?after=${after}`);
+      if (body === null) throw new BlueprintUnreachable("project not found");
+      return body as SpecChanges;
+    },
     async locate(bp, request) {
       const r = await post(`/v1/projects/${id(bp)}/locate`, { request });
       if (r.status !== 200 || r.json === null) throw new BlueprintUnreachable(`status ${r.status}`);

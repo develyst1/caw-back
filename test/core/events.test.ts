@@ -20,7 +20,7 @@ test("reduce is pure: project.created makes the project with its defaults; the i
   const after = reduce(empty, created());
   expect(empty).toEqual(snapshot);
   expect(after.project).toEqual({
-    id: ID, name: "จองห้องประชุม", blueprintProjectId: "bp-1", version: 1, latestSeenVersion: 1,
+    id: ID, name: "จองห้องประชุม", blueprintProjectId: "bp-1", version: 1, latestSeenVersion: 1, latestLabel: null, // + latestLabel (REQ-105): an event with no label → null
     mode: "manual", hopBudget: 0, hopsUsed: 0, workspace: { roots: [], readOnly: [] }, entryWorkerId: null, codeMap: null, createdAt: "2026-10-13T08:00:00.123Z",
   });
   expect(() => reduce(after, created())).toThrow("project.created twice");
@@ -79,7 +79,7 @@ test("a worker-only event (projectId null) is replayed for every project: rebuil
   expect(seen).toEqual(["project.created", "worker.created"]);
 });
 
-test("the event vocabulary is SPEC-A-008 § Event types, v1.1 included — 39 names (v1.3 added card.handoff_refused; v1.4 the chat, hop.located and proposal events; v1.9 chat.retry_requested; v1.10 worker.updated; v1.11 hop.heartbeat; v1.14 worker.deleted; v1.16 project.code_map_saved / project.code_map_confirmed)", () => {
+test("the event vocabulary is SPEC-A-008 § Event types, v1.1 included — 42 names (v1.3 added card.handoff_refused; v1.4 the chat, hop.located and proposal events; v1.9 chat.retry_requested; v1.10 worker.updated; v1.11 hop.heartbeat; v1.14 worker.deleted; v1.16 project.code_map_saved / project.code_map_confirmed; REQ-105: spec.revised, card.anchor_removed / card.anchor_restored)", () => {
   expect([...EVENT_TYPES]).toEqual([
     "project.created", "worker.created", "worker.combined", "chain.member_added", "chain.member_removed", "chain.edge_added",
     "chain.edge_removed", "chain.entry_set", "card.created", "card.dependency_added", "card.status_set", "card.assigned",
@@ -87,6 +87,7 @@ test("the event vocabulary is SPEC-A-008 § Event types, v1.1 included — 39 na
     "card.spec_change_cleared", "card.handoff_refused", "project.mode_set", "project.budget_set", "project.workspace_set", "run.started", "run.finished",
     "hop.claimed", "hop.started", "hop.finished", "chat.posted", "chat.replied", "hop.located", "proposal.made", "proposal.accepted", "proposal.superseded",
     "chat.retry_requested", "worker.updated", "hop.heartbeat", "worker.deleted", "project.code_map_saved", "project.code_map_confirmed",
+    "spec.revised", "card.anchor_removed", "card.anchor_restored",
   ]);
-  expect(EVENT_TYPES).toHaveLength(39);
+  expect(EVENT_TYPES).toHaveLength(42);
 });
