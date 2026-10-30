@@ -28,7 +28,7 @@ test("rebuild-check → same:true after a sequence touching every event type of 
   await call("PATCH", `/v1/cards/${k1.id}/status`, { status: "doing" }, `worker:${a.id}`, HA);
   await call("POST", `/v1/cards/${k1.id}/comments`, { text: "บันทึก" }, `worker:${a.id}`, HA);
   expect((await call("POST", `/v1/cards/${k1.id}/handoff`, { toWorkerId: c.id, text: "ข้ามสาย" }, `worker:${a.id}`, HA)).status).toBe(409); // a → c has no edge: refused, and recorded (v1.3)
-  await call("POST", `/v1/cards/${k1.id}/handoff`, { toWorkerId: b.id, text: "ส่งต่อ" }, `worker:${a.id}`, HA);
+  await call("POST", `/v1/cards/${k1.id}/handoff`, { toWorkerId: b.id, text: "ส่งต่อ", reason: "ต้องมีหน้าจอ" }, `worker:${a.id}`, HA); // BE → FE-only: a reason (REQ-125)
   await call("PATCH", `/v1/hops/${hopA.id}`, { outcome: "handed_off" });
   await call("PATCH", `/v1/cards/${k2.id}/assignee`, { workerId: b.id });
   const hopB = (await call("POST", `${P}/hops`, { cardId: k1.id, workerId: b.id })).json;

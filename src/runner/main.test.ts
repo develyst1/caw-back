@@ -142,7 +142,7 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     if (sw.status !== 200) throw new Error(JSON.stringify(sw.json));
     const cardOf = (cmd: string[]) => /Your card is (\S+)/.exec(cmd[2]!)![1]!;
     const turn = async (cardId: string) => { // status first, comment LAST: the last write decides the outcome (`commented`)
-      await w.call("PATCH", `/v1/cards/${cardId}/status`, { status: "review" }, w.actor);
+      await w.call("PATCH", `/v1/cards/${cardId}/status`, { status: "review", done: "ทำแล้ว", howToTry: "เปิดดูได้เลย" }, w.actor);
       await w.call("POST", `/v1/cards/${cardId}/comments`, { text: "done" }, w.actor);
     };
     const how: Record<string, (cardId: string) => Promise<void>> = {};
@@ -311,7 +311,7 @@ describe("tick — automatic mode (TASK-C-031)", () => {
       order.push(id === A.id ? "A" : id === B.id ? "B" : "C");
       return fakeChild({ lines: fixture("ok"), before: async () => {
         if (id === A.id) await w.call("POST", `/v1/cards/${A.id}/question`, { text: "which?", proposedDefault: "x", cases: ["a"] }, w.actor);
-        else { await w.call("PATCH", `/v1/cards/${id}/status`, { status: "review" }, w.actor); await w.call("POST", `/v1/cards/${id}/comments`, { text: "done" }, w.actor); }
+        else { await w.call("PATCH", `/v1/cards/${id}/status`, { status: "review", done: "ทำแล้ว", howToTry: "เปิดดูได้เลย" }, w.actor); await w.call("POST", `/v1/cards/${id}/comments`, { text: "done" }, w.actor); }
       } });
     });
     const r = createRunner({ ...w.mkDeps(), instance: "inst-A" });
@@ -439,7 +439,7 @@ describe("tick — automatic mode (TASK-C-031)", () => {
               await gate;
               const cardId = /Your card is (\S+)/.exec(JSON.parse(line).message.content)![1]!;
               const as = `worker:${mcp.CAW_WORKER_ID}`;
-              await a.call("PATCH", `/v1/cards/${cardId}/status`, { status: "review" }, as, { "x-caw-hop": hopFileId });
+              await a.call("PATCH", `/v1/cards/${cardId}/status`, { status: "review", done: "ทำแล้ว", howToTry: "เปิดดูได้เลย" }, as, { "x-caw-hop": hopFileId });
               await a.call("POST", `/v1/cards/${cardId}/comments`, { text: "done" }, as, { "x-caw-hop": hopFileId });
               for (const l of fixture("ok")) ctrl.enqueue(new TextEncoder().encode(`${l}\n`));
             })();
@@ -784,7 +784,7 @@ describe("chat hops: the entry worker answers an operator message (TASK-C-034)",
       ? (over.chat ? over.chat(cmd) : fakeChild({ lines: fixture("ok"), before: async () => { await answer(messageOf(cmd)); } }))
       : fakeChild({ lines: fixture("ok"), before: async () => {
           const id = /Your card is (\S+)/.exec(cmd[2]!)![1]!;
-          await w.call("PATCH", `/v1/cards/${id}/status`, { status: "review" }, w.actor);
+          await w.call("PATCH", `/v1/cards/${id}/status`, { status: "review", done: "ทำแล้ว", howToTry: "เปิดดูได้เลย" }, w.actor);
           await w.call("POST", `/v1/cards/${id}/comments`, { text: "done" }, w.actor);
         } }));
     setBehaviour();

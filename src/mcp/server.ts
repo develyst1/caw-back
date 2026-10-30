@@ -89,14 +89,14 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
   server.registerTool("hand_off", {
     title: "Hand a card to the next worker",
     description: "Pass a card assigned to you to another worker. Only along the project's chain: an edge from you to them must exist, or the call fails with chain_broken and lists who you may hand to.",
-    inputSchema: { cardId: z.string().min(1), toWorkerId: z.string().min(1).describe("the worker's id or name (see `handOffTo` in your card context)"), text: z.string().min(1).describe("what you did and what they should do next") },
-  }, ({ cardId, toWorkerId, text }) => run("POST", `/v1/cards/${id(cardId)}/handoff`, { toWorkerId, text }));
+    inputSchema: { cardId: z.string().min(1), toWorkerId: z.string().min(1).describe("the worker's id or name (see `handOffTo` in your card context)"), text: z.string().min(1).describe("what you did and what they should do next"), reason: z.string().min(1).optional().describe("why another builder is needed — required when you hand a BE card to an FE (or an FE card to a BE)") },
+  }, ({ cardId, toWorkerId, text, reason }) => run("POST", `/v1/cards/${id(cardId)}/handoff`, { toWorkerId, text, ...(reason ? { reason } : {}) }));
 
   server.registerTool("set_status", {
     title: "Set a card's status",
     description: "Move a card assigned to you: todo, doing, review, done or stuck. `doing` is refused (waiting_on_question) while a card it depends on is not done.",
-    inputSchema: { cardId: z.string().min(1), status: z.enum(["todo", "doing", "review", "done", "stuck"]) },
-  }, ({ cardId, status }) => run("PATCH", `/v1/cards/${id(cardId)}/status`, { status }));
+    inputSchema: { cardId: z.string().min(1), status: z.enum(["todo", "doing", "review", "done", "stuck"]), done: z.string().min(1).optional().describe("with review (required): what you did — files or parts, in plain Thai"), howToTry: z.string().min(1).optional().describe("with review (required): how the owner can try it — a command, a page to open, or nothing to try and why") },
+  }, ({ cardId, status, done, howToTry }) => run("PATCH", `/v1/cards/${id(cardId)}/status`, { status, ...(done ? { done: lineBreaks(done) } : {}), ...(howToTry ? { howToTry: lineBreaks(howToTry) } : {}) }));
 
   server.registerTool("ask_operator", {
     title: "Ask the operator",

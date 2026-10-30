@@ -220,10 +220,10 @@ test("comment and ask_operator (a worker on a card hop): text, proposedDefault a
   const q = await s.call("POST", `/v1/cards/${card.id}/question`, { text: "ใช้ /Users/x/w/mc2-front-api ไหม", proposedDefault: "ใช้ /Users/x/w/mc2-front-api", cases: ["/Users/x/other", "ไม่"] }, as, H);
   expect(q.status).toBe(201);
   expect(q.json.question).toEqual({ text: "ใช้ mc2-front-api ไหม", proposedDefault: "ใช้ mc2-front-api", cases: ["~/other", "ไม่"] });
-  const handed = await s.call("POST", `/v1/cards/${card.id}/handoff`, { toWorkerId: b.id, text: "ดู /Users/x/w/mc2-front/a.ts" }, as, H);
+  const handed = await s.call("POST", `/v1/cards/${card.id}/handoff`, { toWorkerId: b.id, text: "ดู /Users/x/w/mc2-front/a.ts", reason: "ต้องมีหน้าจอ" }, as, H); // BE → FE-only: a reason (REQ-125)
   expect(handed.status).toBe(200);
   const notes = (await s.call("GET", `/v1/cards/${card.id}/context`)).json.notes.map((n: any) => n.text);
-  expect(notes).toContain("ดู /Users/x/w/mc2-front/a.ts"); // hand_off keeps its text as sent (v1.13 left it alone too)
+  expect(notes).toContain("ดู /Users/x/w/mc2-front/a.ts\n\nต้องมีหน้าจอ"); // hand_off keeps its text as sent (v1.13 left it alone too); the reason follows after a blank line
 });
 
 test("D-098 through the API: two roots sharing a last segment are shown as parent/last; the read-only roots count like the writable ones (Revision 2)", async () => {

@@ -86,17 +86,17 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
 
   app.openapi(createRoute({
     method: "post", path: "/v1/cards/{cardId}/handoff",
-    request: { params: CardId, body: body(z.object({ toWorkerId: z.string().min(1).openapi({ description: "the worker's id or name (see `handOffTo` in your card context)" }), text: Text }), "hand the card to the next worker along the chain") },
+    request: { params: CardId, body: body(z.object({ toWorkerId: z.string().min(1).openapi({ description: "the worker's id or name (see `handOffTo` in your card context)" }), text: Text, reason: z.string().max(2000).optional().openapi({ description: "REQ-125: why another builder role is needed — required when a BE card goes to a worker who is FE and not BE, or the other way round (else 409 wrong_role)" }) }), "hand the card to the next worker along the chain") },
     responses: { 200: card("the card, now the next worker's"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
   }), async (c) => {
     const b = c.req.valid("json");
-    return c.json(await handOff(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, b.toWorkerId, b.text), 200);
+    return c.json(await handOff(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, b.toWorkerId, b.text, b.reason), 200);
   });
 
   app.openapi(createRoute({
-    method: "patch", path: "/v1/cards/{cardId}/status", request: { params: CardId, body: body(z.object({ status: Status }), "the new status") },
+    method: "patch", path: "/v1/cards/{cardId}/status", request: { params: CardId, body: body(z.object({ status: Status, done: z.string().max(4000).optional().openapi({ description: "REQ-125: with status review, what was done — a worker must send it with howToTry (else 409 review_note_missing)" }), howToTry: z.string().max(4000).optional().openapi({ description: "REQ-125: with status review, how the owner tries it, or nothing to try and why" }) }), "the new status") },
     responses: { 200: card("the card"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
-  }), async (c) => c.json(await setStatus(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, c.req.valid("json").status), 200));
+  }), async (c) => { const b = c.req.valid("json"); return c.json(await setStatus(db, c.get("actor"), c.get("hop"), c.req.valid("param").cardId, b.status, { done: b.done, howToTry: b.howToTry }), 200); });
 
   app.openapi(createRoute({
     method: "patch", path: "/v1/cards/{cardId}/assignee", request: { params: CardId, body: body(z.object({ workerId: z.string().min(1) }), "the operator re-assigns") },

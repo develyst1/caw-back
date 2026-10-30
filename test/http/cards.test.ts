@@ -154,11 +154,11 @@ test("AC-4 hand-off: along a chain edge → 200 (the card moves to the next work
   expect((await call("POST", H, { toWorkerId: b.id, text: "" }, as(a), HA)).status).toBe(400);
   expect((await call("POST", H, { toWorkerId: "00000000-0000-0000-0000-000000000099", text: "x" }, as(a), HA)).status).toBe(409);
 
-  const ok = await call("POST", H, { toWorkerId: b.id, text: "ทำฝั่งหน้าจอต่อ" }, as(a), HA);
+  const ok = await call("POST", H, { toWorkerId: b.id, text: "ทำฝั่งหน้าจอต่อ", reason: "ต้องมีหน้าจอ" }, as(a), HA); // Ann is BE, Ben is FE only: REQ-125 asks for a reason
   expect(ok.status).toBe(200);
   expect(ok.json).toMatchObject({ id: card.id, assigneeId: b.id });
   const note = (await call("GET", `/v1/cards/${card.id}/context`)).json.notes.at(-1);
-  expect(note).toMatchObject({ type: "handoff", actor: as(a), text: "ทำฝั่งหน้าจอต่อ", fromWorkerId: a.id, toWorkerId: b.id });
+  expect(note).toMatchObject({ type: "handoff", actor: as(a), text: "ทำฝั่งหน้าจอต่อ\n\nต้องมีหน้าจอ", fromWorkerId: a.id, toWorkerId: b.id });
   // now it is b's: a (whose hop is still running on the card) can no longer hand it off, b has no edge out
   expect((await call("POST", H, { toWorkerId: c.id, text: "x" }, as(a), HA)).json.error.code).toBe("not_your_card");
   await call("PATCH", `/v1/hops/${hopA.id}`, { outcome: "handed_off" });

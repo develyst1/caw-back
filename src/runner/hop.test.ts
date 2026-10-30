@@ -94,7 +94,7 @@ describe("runHop — outcome comes from what the worker wrote to the store", () 
     const w = await world();
     w.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
       await w.call("POST", `/v1/cards/${w.card.id}/comments`, { text: "c" }, w.actor);
-      await w.call("PATCH", `/v1/cards/${w.card.id}/status`, { status: "review" }, w.actor);
+      await w.call("PATCH", `/v1/cards/${w.card.id}/status`, { status: "review", done: "ทำแล้ว", howToTry: "เปิดดูได้เลย" }, w.actor);
     } }));
     await runHop(w.deps, await w.input());
     expect((await w.finished()).outcome).toBe("status");

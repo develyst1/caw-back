@@ -44,7 +44,7 @@ test("a running hop of that worker on that card → every guarded write passes",
     const r = await w.call(method, path, body, w.as, hopHeader(w.hop.id));
     expect([name, r.status < 300]).toEqual([name, true]);
   }
-  const hand = await w.call("POST", `/v1/cards/${w.card.id}/handoff`, { toWorkerId: w.b.id, text: "ต่อ" }, w.as, hopHeader(w.hop.id));
+  const hand = await w.call("POST", `/v1/cards/${w.card.id}/handoff`, { toWorkerId: w.b.id, text: "ต่อ", reason: "ต้องมีหน้าจอ" }, w.as, hopHeader(w.hop.id)); // BE → FE-only: a reason (REQ-125)
   expect([hand.status, hand.json.assigneeId]).toEqual([200, w.b.id]);
 });
 

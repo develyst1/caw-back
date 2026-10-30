@@ -113,7 +113,7 @@ test("comment · set_status · hand_off · ask_operator: each one API call as th
   expect([waiting.isError, waiting.json.error.code]).toEqual([true, "waiting_on_question"]); // the asking card now waits
 
   await w.call("POST", `/v1/cards/${q.json.id}/answer`, { answer: "ต้อง" });
-  const hand = await call("hand_off", { cardId: w.c1.id, toWorkerId: w.b.id, text: "ทำหน้าจอต่อ" });
+  const hand = await call("hand_off", { cardId: w.c1.id, toWorkerId: w.b.id, text: "ทำหน้าจอต่อ", reason: "ต้องมีหน้าจอ" }); // BE → FE-only: REQ-125 asks for a reason
   expect(hand.json).toMatchObject({ id: w.c1.id, assigneeId: w.b.id });
   const events = (await w.call("GET", `/v1/projects/${w.project.id}/events?limit=500`)).json.events;
   expect(events.filter((e: any) => e.actor === `worker:${w.a.id}`).map((e: any) => e.type)).toEqual(["card.commented", "card.status_set", "card.question_opened", "card.handed_off"]);
@@ -251,9 +251,9 @@ test("v1.13: the HTTP API stores text as sent — the operator's own comment wit
 test("v1.13 scope: hand_off and ask_operator are NOT converted (D-078 asked for reply and comment only) — asserted so nobody widens it by accident", async () => {
   const w = await world();
   const { call } = await connect(w.app, w.a.id, w.hop.id);
-  const handed = await call("hand_off", { cardId: w.c1.id, toWorkerId: w.b.id, text: `ส่ง${BS_N}ต่อ` });
+  const handed = await call("hand_off", { cardId: w.c1.id, toWorkerId: w.b.id, text: `ส่ง${BS_N}ต่อ`, reason: "ต้องมีหน้าจอ" }); // BE → FE-only: REQ-125 asks for a reason
   expect(handed.isError).toBe(false);
-  expect(await notesOf(w)).toContain(`ส่ง${BS_N}ต่อ`); // the hand-off note keeps its literal pair
+  expect(await notesOf(w)).toContain(`ส่ง${BS_N}ต่อ\n\nต้องมีหน้าจอ`); // the hand-off note keeps its literal pair (the reason follows after a blank line)
   const w2 = await world();
   const { call: call2 } = await connect(w2.app, w2.a.id, w2.hop.id);
   const q = await call2("ask_operator", { cardId: w2.c1.id, text: `ห้อง${BS_N}ใหญ่ไหม`, proposedDefault: `ต้อง${BS_N}`, cases: [`เล็ก${BS_N}`, "ใหญ่"] });

@@ -50,7 +50,7 @@ test("the operator's refused hand-off is recorded too (the same rule, actor oper
 
 test("along the chain: no refused note; the hand-off works as before", async () => {
   const w = await world();
-  const ok = await w.call("POST", `/v1/cards/${w.card.id}/handoff`, { toWorkerId: w.b.id, text: "ต่อ" }, w.as, w.H);
+  const ok = await w.call("POST", `/v1/cards/${w.card.id}/handoff`, { toWorkerId: w.b.id, text: "ต่อ", reason: "ต้องมีหน้าจอ" }, w.as, w.H); // Ann is BE, Ben FE only: a reason (REQ-125)
   expect([ok.status, ok.json.assigneeId]).toEqual([200, w.b.id]);
   expect((await w.notes()).map((n) => n.type)).toEqual(["handoff"]);
   expect((await w.db.select().from(events)).filter((e) => e.type === "card.handoff_refused")).toEqual([]);

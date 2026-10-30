@@ -19,6 +19,9 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
     for (const t of ["comment", "hand_off", "set_status", "ask_operator"]) expect(p).toContain(t);
     expect(p).toMatch(/exactly one/i);
   });
+  test("REQ-125 (SPEC-124 D4): rule 3 tells the worker that a card goes to review only with `done` and `howToTry`", () => {
+    expect(p).toContain("3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`. To send a card to review, `set_status` with `review` needs `done` (what you did) and `howToTry` (how the owner tries it).");
+  });
   test("rule 2 (REQ-121 SPEC-119 D2.1): only this card's work; requirements and rules bind how — right after card_context", () => {
     expect(p).toContain("relatedDecisions");
     expect(p).toContain("2. Do only your card's work — its title and its `todo`. Every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` binds how you do it (a rule on a related part applies to your card too); they are not a list of work for this card.");

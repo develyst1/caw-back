@@ -27,7 +27,7 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
     // REQ-121 (SPEC-119 D2.1): they bind HOW the card's work is done; they are not this card's work list (TEST-106 P3-2: card #1 built all eight)
     "2. Do only your card's work — its title and its `todo`. Every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` binds how you do it (a rule on a related part applies to your card too); they are not a list of work for this card.",
     ...(others.length === 0 ? [] : [`Other cards hold their own work — leave it to them, even if you could do it now: ${others.map((o) => `#${o.number} ${o.title} (${o.assignee ?? "ยังไม่มีคนรับ"}, ${o.status})`).join("; ")}.`]),
-    "3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
+    "3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`. To send a card to review, `set_status` with `review` needs `done` (what you did) and `howToTry` (how the owner tries it).",
     // SPEC-116 D3.2: the only other place a worker learns whom it may hand to is the refusal — say it up front, by name and role
     ...(recipients.length === 0 ? [] : [`You may hand off to: ${recipients.map((r) => `${r.name} (${r.roles.join(" + ")})`).join(", ")} — pass the name (or the id) as \`toWorkerId\` of \`hand_off\`.`]),
     "4. No git writes (no add, commit, push, branch, checkout). No web. Stay inside your working folders.",

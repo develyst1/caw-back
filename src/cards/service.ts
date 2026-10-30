@@ -3,7 +3,7 @@
 import { eq } from "drizzle-orm";
 import type { Blueprint } from "../blueprint/client";
 import { labelOf, pinnedRead, readLatestPart, type LatestRead } from "../blueprint/latest";
-import type { Actor, CardStatus } from "../core/events";
+import type { Actor, CardStatus, CawEvent } from "../core/events";
 import { newId, now } from "../core/ids";
 import { rewriteForActor } from "../core/paths";
 import type { CardState, CodeMapState, State } from "../core/reduce";
@@ -140,8 +140,22 @@ const recipientsOf = (s: State, workerId: string | null): Recipient[] => workerI
   .flatMap((e) => s.workers.filter((w) => w.id === e.to && w.deletedAt === null).map((w) => ({ id: w.id, name: w.name, roles: w.roles })))
   .sort((a, b) => (a.id < b.id ? -1 : 1));
 
+/** REQ-125 (SPEC-124 D1): the worker a card was made for — the sender of its first hand-off (note ids are time-ordered), else its assignee now. Read from the notes, so no new column. */
+export function madeFor(s: State, c: CardState): string | null {
+  const first = s.notes.filter((n) => n.cardId === c.id && n.type === "handoff").sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+  return first ? first.fromWorkerId : c.assigneeId;
+}
+
+/** REQ-125 (SPEC-124 D1): a card's builder role — BE or FE — from the worker it was made for; null when that worker is neither or both */
+export function cardRole(s: State, c: CardState): "BE" | "FE" | null {
+  const who = madeFor(s, c);
+  const roles = s.workers.find((w) => w.id === who)?.roles ?? [];
+  const be = roles.includes("BE"), fe = roles.includes("FE");
+  return be && !fe ? "BE" : fe && !be ? "FE" : null;
+}
+
 // A hand-off follows an edge of the project's chain: from the card's current assignee to a worker it may hand to — named by id or by name (SPEC-116 D3.4).
-export async function handOff(db: Db, actor: Actor, hopId: string | null, cardId: string, toWorkerId: string, text: string): Promise<Card> {
+export async function handOff(db: Db, actor: Actor, hopId: string | null, cardId: string, toWorkerId: string, text: string, reason?: string): Promise<Card> {
   const { projectId } = await findCard(db, cardId);
   const noteId = newId();
   try {
@@ -157,7 +171,15 @@ export async function handOff(db: Db, actor: Actor, hopId: string | null, cardId
         throw new ApiError(409, "chain_broken", `the chain has no hand-off from the card's worker to that worker — you may hand to: ${list}`,
           { from: c.assigneeId, allowed: recipients.map((r) => r.id), allowedWorkers: recipients });
       }
-      return { type: "card.handed_off", projectId: c.projectId, actor, at: now(), data: { cardId, fromWorkerId: c.assigneeId, toWorkerId: to, noteId, text } };
+      // REQ-125 (SPEC-124 D2): a BE card to a worker who is FE and not BE (or the other way round) needs a reason; QA, SA, PM, BA and other never do
+      const role = cardRole(s, c);
+      const toRoles = recipients.find((r) => r.id === to)!.roles;
+      const other = role === "BE" ? "FE" : role === "FE" ? "BE" : null;
+      const why = (reason ?? "").trim();
+      if (role !== null && other !== null && !toRoles.includes(role) && toRoles.includes(other) && why === "") {
+        throw new ApiError(409, "wrong_role", `ส่งต่อการ์ดนี้ไม่ได้ — การ์ดนี้เป็นงานของ ${role} ถ้าต้องให้ ${other} ช่วย ให้บอกเหตุผลในการส่งต่อ (ใส่ใน reason)`, { cardRole: role, toRoles });
+      }
+      return { type: "card.handed_off", projectId: c.projectId, actor, at: now(), data: { cardId, fromWorkerId: c.assigneeId, toWorkerId: to, noteId, text: why === "" ? text : `${text}\n\n${why}` } };
     });
     return cardView(state, card);
   } catch (e) {
@@ -186,7 +208,7 @@ async function recordRefusedHandOff(db: Db, projectId: string, actor: Actor,
   }
 }
 
-export async function setStatus(db: Db, actor: Actor, hopId: string | null, cardId: string, status: CardStatus): Promise<Card> {
+export async function setStatus(db: Db, actor: Actor, hopId: string | null, cardId: string, status: CardStatus, note: { done?: string; howToTry?: string } = {}): Promise<Card> {
   await findCard(db, cardId);
   const { state, card } = await onCard(db, cardId, (s, c) => {
     guardHop(s, actor, hopId, c);
@@ -195,7 +217,16 @@ export async function setStatus(db: Db, actor: Actor, hopId: string | null, card
     if (status === "doing" && depsOf(s, c.id).some((d) => d.status !== "done")) {
       throw new ApiError(409, "waiting_on_question", "a card this one depends on is not done yet");
     }
-    return { type: "card.status_set", projectId: c.projectId, actor, at: now(), data: { cardId, status } };
+    const at = now();
+    const done = (note.done ?? "").trim(), howToTry = (note.howToTry ?? "").trim();
+    // REQ-125 (SPEC-124 D3): a worker moves a card to review only with both parts; CAW writes them as one note on the card, in the same write
+    if (status === "review" && actor.startsWith("worker:") && (done === "" || howToTry === "")) {
+      throw new ApiError(409, "review_note_missing", "ยังส่งตรวจไม่ได้ — เขียนบันทึกก่อนว่าทำอะไรไปบ้าง และเจ้าของจะลองได้อย่างไร (ใส่ใน done และ howToTry)", { missing: [...(done === "" ? ["done"] : []), ...(howToTry === "" ? ["howToTry"] : [])] });
+    }
+    const set: CawEvent = { type: "card.status_set", projectId: c.projectId, actor, at, data: { cardId, status } };
+    if (status !== "review" || done === "" || howToTry === "") return set;
+    const text = rewriteForActor(actor, `ทำแล้ว: ${done}\nลองได้โดย: ${howToTry}`, s.project!.workspace.roots);
+    return [{ type: "card.commented", projectId: c.projectId, actor, at, data: { cardId, noteId: newId(), text } }, set];
   });
   return cardView(state, card);
 }
