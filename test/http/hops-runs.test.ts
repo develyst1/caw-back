@@ -66,7 +66,7 @@ test("hop errors: unknown card / hop / project → 404 · a worker outside the c
   expect((await call("GET", `${P}/hops?limit=201`)).status).toBe(400);
 });
 
-test("budget (dispatcher only): hopsUsed ≥ hopBudget → 409 no_budget; manual mode has no limit; switching modes never resets hopsUsed", async () => {
+test("REQ-120: no project-wide budget — dispatcher hopsUsed ≥ hopBudget no longer refuses; manual mode has no limit; switching modes never resets hopsUsed", async () => {
   const { call, project, a, P } = await twoCards();
   await call("PATCH", `${P}/mode`, { mode: "dispatcher", hopBudget: 2 });
   for (let i = 0; i < 2; i++) {
@@ -76,18 +76,22 @@ test("budget (dispatcher only): hopsUsed ≥ hopBudget → 409 no_budget; manual
     await finish(call, h.json.id);
   }
   const spent = (await newCard(call, project.id, { assigneeId: a.id })).json;
-  const refused = await hopOn(call, project.id, spent.id, a.id);
-  expect([refused.status, refused.json.error.code]).toEqual([409, "no_budget"]);
-  expect((await call("GET", P)).json).toMatchObject({ hopsUsed: 2, hopBudget: 2 });
+  const third = await hopOn(call, project.id, spent.id, a.id); // hopsUsed 2 ≥ hopBudget 2: the project's count no longer refuses (the run's budget is the only one)
+  expect(third.status).toBe(201);
+  await finish(call, third.json.id);
+  expect((await call("GET", P)).json).toMatchObject({ hopsUsed: 3, hopBudget: 2 }); // hopsUsed still counts every hop
   await call("PATCH", `${P}/mode`, { mode: "manual" });
-  expect((await call("GET", P)).json.hopsUsed).toBe(2);
-  expect((await hopOn(call, project.id, spent.id, a.id)).status).toBe(201); // manual: no budget
-  await call("PATCH", `${P}/mode`, { mode: "dispatcher", hopBudget: 3 }); // raising the budget lets the next one in
-  const h = (await call("GET", `${P}/hops?limit=1`)).json.hops[0];
-  await finish(call, h.id);
-  const next = (await newCard(call, project.id, { assigneeId: a.id })).json;
   expect((await call("GET", P)).json.hopsUsed).toBe(3);
-  expect((await hopOn(call, project.id, next.id, a.id)).json.error.code).toBe("no_budget");
+  const manual = await hopOn(call, project.id, spent.id, a.id);
+  expect(manual.status).toBe(201); // manual: no limit
+  await finish(call, manual.json.id);
+  await call("PATCH", `${P}/mode`, { mode: "dispatcher", hopBudget: 3 });
+  const next = (await newCard(call, project.id, { assigneeId: a.id })).json;
+  expect((await call("GET", P)).json.hopsUsed).toBe(4); // switching modes and typing a number never reset it
+  const last = await hopOn(call, project.id, next.id, a.id);
+  expect(last.status).toBe(201);
+  await finish(call, last.json.id);
+  expect((await call("GET", P)).json.hopsUsed).toBe(5);
 });
 
 test("GET hops: newest first, `limit`, `runId`", async () => {

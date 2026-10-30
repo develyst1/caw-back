@@ -182,17 +182,28 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     expect(runs[0]!.report).toContain("- 3 ก้าว จากงบ 3");
   });
 
-  test("the PROJECT's budget can refuse a hop the run's budget would allow (409 no_budget) → the run ends budget_spent", async () => {
-    const a = await auto(3, 2);
-    // one hop is already used outside this run (project hopsUsed 1 of 2) — started by hand, as the screen would, while still in manual
+  // REQ-120 (SPEC-118 D1, AC-1/AC-2): the number typed for อัตโนมัติ is THIS run's steps — the first run's hops do not count against the second.
+  // Run 2 is opened by the runner's own `open_run` (one quiet tick, then the project's hopBudget 2), not by a POST …/runs of the test.
+  test("REQ-120: a second run with the same number takes its own steps — the first run's hops do not count", async () => {
+    const a = await auto(5, 2);
+    const r = a.runner();
+    await a.drive(r);
+    const [first] = await a.runs();
+    expect([first!.stopReason, first!.hopsUsed]).toEqual(["budget_spent", 2]);
+    // the screen's budget dialog: manual, then dispatcher with the same number again
     await a.call("PATCH", `/v1/projects/${a.project.id}/mode`, { mode: "manual" });
-    const first = (await a.call("POST", `/v1/projects/${a.project.id}/hops`, { cardId: a.cards[2]!.id, workerId: a.worker.id }, "operator")).json;
-    await a.api.finishHop(first.id, { outcome: "commented" });
-    await a.call("PATCH", `/v1/projects/${a.project.id}/mode`, { mode: "dispatcher" }); // budget stays 2, hopsUsed is 1
-    await a.drive(a.runner());
+    await a.call("PATCH", `/v1/projects/${a.project.id}/mode`, { mode: "dispatcher", hopBudget: 2 });
+    await a.drive(r);
     const runs = await a.runs();
-    expect(runs[0]!.stopReason).toBe("budget_spent");
-    expect((await a.hops()).filter((h) => h.runId === runs[0]!.id)).toHaveLength(1); // only ONE more hop was allowed
+    expect(runs).toHaveLength(2);
+    const [second] = runs;
+    expect(second!.id).not.toBe(first!.id);
+    expect(second!.stopReason).toBe("budget_spent");
+    const own = (await a.hops()).filter((h) => h.runId === second!.id);
+    expect(own).toHaveLength(2); // its own two steps, not 0
+    expect(second!.report).toContain("- 2 ก้าว จากงบ 2");
+    expect(second!.report).toContain("- เหตุที่จบรอบ: ใช้งบครบแล้ว");
+    expect((await a.call("GET", `/v1/projects/${a.project.id}`)).json.hopsUsed).toBe(4); // the lifetime count keeps its meaning
   });
 
   test("nothing workable ends the run (once) — later ticks do not open another one", async () => {

@@ -1,5 +1,5 @@
-// TASK-A-081 / contract v1.8 (D-055): a chat hop (a hop with a messageId) is OUTSIDE the hop budget — exempt from the project's budget
-// (dispatcher) and from a run's budget, and not counted in Project.hopsUsed nor Run.hopsUsed. It keeps its times, tokens and outcome and
+// TASK-A-081 / contract v1.8 (D-055): a chat hop (a hop with a messageId) is OUTSIDE the hop budget — exempt from a run's budget
+// (the only budget, REQ-120), and not counted in Project.hopsUsed nor Run.hopsUsed. It keeps its times, tokens and outcome and
 // is listed in GET …/hops (the cost stays visible). hop_running and the claim rules still apply to it. Card hops are unchanged.
 import { expect, test } from "bun:test";
 import { chatHop, chatWorld, newCard, postChat, setup, type Call } from "../helpers/api";
@@ -17,15 +17,16 @@ async function world() {
 }
 const used = async (call: Call, P: string) => (await call("GET", P)).json.hopsUsed as number;
 
-test("dispatcher, hopsUsed = hopBudget: a CARD hop → 409 no_budget, a CHAT hop → 201", async () => {
+test("a run at its budget: a CARD hop → 409 no_budget, a CHAT hop → 201 (REQ-120: the run's budget is the only one)", async () => {
   const w = await world();
   await w.call("PATCH", `${w.P}/mode`, { mode: "dispatcher", hopBudget: 1 });
+  const run = (await w.call("POST", `${w.P}/runs`, { hopBudget: 1 })).json;
   const c1 = await w.card("ใบแรก"), c2 = await w.card("ใบสอง");
-  const h = await w.cardHop(c1.id);
+  const h = await w.cardHop(c1.id, { runId: run.id });
   expect(h.status).toBe(201);
   await w.finish(h.json.id);
   expect(await w.getProject()).toMatchObject({ hopsUsed: 1, hopBudget: 1 });
-  const spent = await w.cardHop(c2.id);
+  const spent = await w.cardHop(c2.id, { runId: run.id });
   expect([spent.status, spent.json.error.code]).toEqual([409, "no_budget"]);
   const m = await w.message();
   const chat = await w.call("POST", `${w.P}/hops`, { workerId: w.a.id, messageId: m.id });

@@ -275,7 +275,7 @@ export function createRunner(deps: HopDeps & { instance: string }) {
         } catch (e) {
           if (!(e instanceof RunnerApiError)) throw e;
           if (e.code === "hop_running" || e.code === "not_workable") return; // lost a race; the next tick sees how it ended
-          if (e.code === "no_budget") return await endRun(project.id, openRun!.id, "budget_spent"); // the project's budget, which the plan cannot see
+          if (e.code === "no_budget") return await endRun(project.id, openRun!.id, "budget_spent"); // the run's budget, filled since the listing (REQ-120: the only budget)
           if (e.status >= 400 && e.status < 500) {
             // e.g. not_a_member (the card's assignee is not in the chain): that card's problem, not the run's. Say so once, leave the
             // card where it is, and go on with the next one
