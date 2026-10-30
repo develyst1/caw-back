@@ -212,3 +212,26 @@ test("`version` in the start body is still accepted when an old caller sends it:
   const r = await createProject(call, { version: 1 });
   expect([r.status, r.json.version, r.json.latestLabel]).toEqual([201, 1, { version: 1, label: "v1" }]);
 });
+
+// REQ-118 (SPEC-117 D4, AC-4, TASK-149): `spec.requirements` reaches card_context through the same read and the same pin — an edited requirement is seen by the NEXT hop, a running hop keeps its own.
+// The fake's `requirements` field in the part context is SYNTHETIC (SPEC-115, Team A TASK-145, until recorded).
+test("AC-4: a requirement's text edited between two hops → the second hop's card_context.spec.requirements has the new text, the first hop's pin keeps the old", async () => {
+  const { call, fake } = await setup();
+  const { project, a } = await chainOf3(call);
+  const req = (text: string) => [{ key: "REQ-001", kind: "requirement", title: "ภาษาไทย", body: { text } }];
+  fake.mode.requirements = req("ทุกหน้าต้องเป็นภาษาไทย");
+  const card = (await newCard(call, project.id, { assigneeId: a.id })).json;
+  const hop1 = await openHop(call, project.id, card.id, a.id); // pinned with the old requirement text
+  const mine = async (hopId: string) => (await call("GET", `/v1/cards/${card.id}/context`, undefined, as(a), hopHeader(hopId))).json;
+  expect((await mine(hop1.id)).spec.requirements[0].body.text).toBe("ทุกหน้าต้องเป็นภาษาไทย");
+
+  fake.mode.requirements = req("ทุกหน้าต้องเป็นภาษาไทยและอ่านง่าย"); fake.mode.spec.revision = 2; // Blueprint: the requirement is edited
+  const running = await mine(hop1.id);
+  expect([running.spec.requirements[0].body.text, running.specRead.pinned]).toEqual(["ทุกหน้าต้องเป็นภาษาไทย", true]); // the running hop keeps its text
+
+  await call("PATCH", `/v1/hops/${hop1.id}`, { outcome: "commented" }, as(a), hopHeader(hop1.id));
+  const hop2 = await openHop(call, project.id, card.id, a.id);
+  const second = await mine(hop2.id);
+  expect([second.spec.requirements[0].body.text, second.specRead.pinned, second.specRead.revision]).toEqual(["ทุกหน้าต้องเป็นภาษาไทยและอ่านง่าย", true, 2]); // the next hop is pinned with the new text
+  expect((await mine(hop1.id)).spec.requirements[0].body.text).toBe("ทุกหน้าต้องเป็นภาษาไทย"); // and the first hop's own pin is unchanged
+});

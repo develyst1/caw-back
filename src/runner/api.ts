@@ -71,6 +71,8 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
     projects: async () => (await call<{ projects: Project[] }>("GET", "/v1/projects", null)).projects,
     workers: async () => (await call<{ workers: Worker[] }>("GET", "/v1/workers", null)).workers,
     card: (id: string) => call<Card>("GET", `/v1/cards/${enc(id)}`, null),
+    /** every requirement of the project's current spec, with its text, by key (SPEC-117 D2.1) */
+    requirements: (projectId: string) => call<{ revision: number; requirements: { key: string; title: string; text: string }[] }>("GET", `/v1/projects/${enc(projectId)}/requirements`, null),
     /** the project's chain: its members (with name and roles) and who may hand to whom (SPEC-116 D3.2) */
     chain: (projectId: string) => call<{ members: Worker[]; edges: { from: string; to: string }[] }>("GET", `/v1/projects/${enc(projectId)}/chain`, null),
     /** newest first */

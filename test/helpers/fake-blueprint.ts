@@ -35,6 +35,10 @@ export function fakeBlueprint() {
     related: {} as Record<string, { via: string; decision: unknown }[]>,
     decisionsOn: {} as Record<string, unknown[]>,
     pageSize: 0, // synthetic: > 0 = answer at most this many change sets and say `more: true` while sets remain (0 = all at once)
+    // synthetic — SPEC-115 (Team A, TASK-145), until recorded: `requirements` = every requirement part, sent in the v2 part context (null = the field is absent, as before TASK-145);
+    // `extraParts` = parts the recorded set does not have (a requirement `REQ-003`…), served by the v2 part-context route as `{ part, neighbours: [] }`
+    requirements: null as null | unknown[],
+    extraParts: {} as Record<string, { kind: string; title: string; body: unknown }>,
   };
   // synthetic — SPEC-106 v2, until recorded: the label as route 1/2/4 show it
   const latestLabel = () => (mode.spec.label ? { ...mode.spec.label, labelledAt: mode.spec.savedAt, by: "โด่ง" } : null);
@@ -72,7 +76,13 @@ export function fakeBlueprint() {
         // synthetic — SPEC-106 REQ-112 addition, until recorded: `relatedDecisions` only when a test set them for this part (a v2 Blueprint before TASK-117 has no such field)
         const rel = mode.related[key] ? { relatedDecisions: mode.related[key], relatedDecisionsMore: false } : {};
         const dec = mode.decisionsOn[key] ? { decisions: mode.decisionsOn[key] } : {};
-        return Response.json({ ...recordedCtx, ...dec, ...rel, revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel() });
+        const reqs = mode.requirements ? { requirements: mode.requirements } : {};
+        return Response.json({ ...recordedCtx, ...dec, ...rel, ...reqs, revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel() });
+      }
+      const extra = /^\/spec\/parts\/([^/]+)\/context$/.exec(rest);
+      if (extra && mode.extraParts[extra[1]!] && !mode.gone.has(extra[1]!)) {
+        const reqs = mode.requirements ? { requirements: mode.requirements } : {};
+        return Response.json({ projectId: m[1], part: { key: extra[1], ...mode.extraParts[extra[1]!] }, neighbours: [], ...reqs, revision: mode.spec.revision, savedAt: mode.spec.savedAt, latestLabel: latestLabel() });
       }
       if (/^\/spec\/parts\/[^/]+\/context$/.test(rest)) return Response.json({ error: { code: "not_found", message: "part" } }, { status: 404 });
       // synthetic — SPEC-106 v2 route 4, until recorded: the change sets a test put in `mode.changes`, after the asked revision

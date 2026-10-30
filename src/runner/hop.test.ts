@@ -593,6 +593,65 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     expect(c.spawned[0]!.cmd[2]).toContain(c.project.id);
     expect(c.spawned[0]!.cmd[2]).toContain("chat_context");
   });
+  // REQ-118 (SPEC-117 D2.2, AC-2): the chat hop's system-prompt file carries every requirement of the spec. The hop's folder goes when the hop ends, so the file is read WHILE the stub child runs.
+  const REQ = (n: number) => ({ key: `REQ-00${n}`, kind: "requirement", title: `ข้อกำหนด ${n}`, body: { text: `ระบบต้องทำข้อ ${n}\nบรรทัดสอง ${n}` }, origin: { date: "2026-10-30", stamp: "operator" } });
+  // `noSkills`: the API never makes a worker without skills (min 1), so that case hands runHop a worker with `skills: []` directly
+  const systemFileSeenBy = async (c: Awaited<ReturnType<typeof chatWorld>>, noSkills = false): Promise<string | null> => {
+    let seen: string | null = null;
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      const cmd = c.spawned[0]!.cmd;
+      const at = cmd.indexOf("--append-system-prompt-file");
+      seen = at === -1 ? null : readFileSync(cmd[at + 1]!, "utf8");
+      await c.reply();
+    } }));
+    const input = await c.input();
+    await runHop(c.deps, noSkills ? { ...input, worker: { ...input.worker, skills: [] } } : input);
+    return seen;
+  };
+  test("AC-2: 8 requirements in the fake spec → the system-prompt file the stub received holds all 8 texts verbatim, after the worker's skills", async () => {
+    const c = await chatWorld();
+    c.fake.mode.snapshot = { parts: [1, 2, 3, 4, 5, 6, 7, 8].map(REQ).reverse(), links: [] };
+    c.fake.mode.spec.revision = 5;
+    const file = (await systemFileSeenBy(c))!;
+    expect(file).toContain("BE craft"); // the worker's own skill is still there
+    expect(file).toContain("# The spec's requirements (Blueprint revision 5) — they bind the whole project");
+    for (let n = 1; n <= 8; n++) expect(file).toContain(`## REQ-00${n} — ข้อกำหนด ${n}\nระบบต้องทำข้อ ${n}\nบรรทัดสอง ${n}`);
+    expect(file.indexOf("BE craft")).toBeLessThan(file.indexOf("# The spec's requirements"));
+    expect(file.indexOf("REQ-001")).toBeLessThan(file.indexOf("REQ-008")); // by key
+    expect(c.spawned[0]!.cmd[2]).not.toContain("ระบบต้องทำข้อ 1"); // not in argv
+  });
+  test("a worker with NO skills still gets the file, with the block alone", async () => {
+    const c = await chatWorld();
+    c.fake.mode.snapshot = { parts: [REQ(1)], links: [] };
+    const file = (await systemFileSeenBy(c, true))!;
+    expect(file.startsWith("# The spec's requirements (Blueprint revision 1)")).toBe(true);
+    expect(file).toContain("ระบบต้องทำข้อ 1");
+  });
+  test("no requirement in the spec → no block (a worker with no skills then gets no file at all)", async () => {
+    const c = await chatWorld();
+    expect(await systemFileSeenBy(c, true)).toBeNull();
+  });
+  test("the requirements cannot be read → the one-line notice, ONE log line, and the hop goes on", async () => {
+    const c = await chatWorld();
+    c.deps.api = { ...c.deps.api, requirements: async () => { throw new RunnerApiError(502, "blueprint_unreachable", "Blueprint did not answer"); } };
+    const file = (await systemFileSeenBy(c))!;
+    expect(file).toContain("# The spec's requirements could not be read just now (Blueprint did not answer).");
+    expect(c.log.filter((l) => l.includes("requirements could not be read"))).toHaveLength(1);
+    expect((await c.finishedChat()).outcome).toBe("replied");
+  });
+  test("a CARD hop gets no requirements block (its card_context carries spec.requirements)", async () => {
+    const c = await world();
+    c.fake.mode.snapshot = { parts: [REQ(1)], links: [] };
+    let seen = "";
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => {
+      const cmd = c.spawned[0]!.cmd;
+      seen = readFileSync(cmd[cmd.indexOf("--append-system-prompt-file") + 1]!, "utf8");
+      await c.call("POST", `/v1/cards/${c.card.id}/comments`, { text: "done" }, c.actor);
+    } }));
+    await runHop(c.deps, await c.input());
+    expect(seen).toContain("BE craft");
+    expect(seen).not.toContain("The spec's requirements");
+  });
   test("a limit or a block on a chat hop ends it like any hop (no run to close)", async () => {
     const c = await chatWorld();
     c.set(() => fakeChild({ lines: limitFixture().slice(0, 14), hang: true }));

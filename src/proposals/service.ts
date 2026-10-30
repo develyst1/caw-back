@@ -54,7 +54,23 @@ function check(s: State, actor: Actor, hopId: string | null, input: { messageId:
   // v1.6 (W10, "cards only from what locate found"): before the Blueprint check
   const located = new Set(hop.locatedKeys ?? []);
   const missing = [...new Set(input.items.map((i) => i.anchor.key).filter((k) => !located.has(k)))];
-  if (missing.length) throw new ApiError(422, "anchor_not_located", "an item is anchored on a key this hop did not locate", { keys: missing });
+  // REQ-118 (SPEC-117 D2.4): a not-located key that looks like a requirement (Blueprint's `REQ-` prefix) is not refused here — `propose` reads it and accepts it only when the part IS a requirement.
+  // The prefix only decides whether to READ; any other not-located key is refused now, before any Blueprint call.
+  const refused = missing.filter((k) => !k.startsWith(REQUIREMENT_PREFIX));
+  if (refused.length) throw new ApiError(422, "anchor_not_located", "an item is anchored on a key this hop did not locate", { keys: missing });
+  return missing; // the not-located `REQ-` keys, for the read
+}
+
+const REQUIREMENT_PREFIX = "REQ-";
+
+/** The not-located `REQ-` keys of an item list must each be a `requirement` part of the current spec (cache-aware read) — otherwise 422 `anchor_not_located`, as for any other not-located key. */
+async function checkRequirementAnchors(db: Db, blueprint: Blueprint, project: { id: string; blueprintProjectId: string }, keys: string[]): Promise<void> {
+  const notRequirements: string[] = [];
+  for (const key of keys) {
+    const read = await readLatestPart(db, blueprint, project, key);
+    if ((read?.body as { part?: { kind?: unknown } } | null | undefined)?.part?.kind !== "requirement") notRequirements.push(key);
+  }
+  if (notRequirements.length) throw new ApiError(422, "anchor_not_located", "an item is anchored on a key this hop did not locate", { keys: notRequirements });
 }
 
 /** REQ-105 (SPEC-107 D4): each distinct anchor key must be live in Blueprint's CURRENT spec — read once per key (cache-aware: Blueprint down → the last body read). Returns what each read
@@ -77,7 +93,8 @@ export async function propose(db: Db, blueprint: Blueprint, actor: Actor, hopId:
   input: { messageId: string; items: ProposalItemIn[] }): Promise<Proposal> {
   const before = await loadState(db, projectId);
   // `check` needs only anchor.key; the items are STORED with the label number the read carried (D2: 0 = none), so a stored proposal always has a number
-  check(before, actor, hopId, { messageId: input.messageId, items: input.items.map((i) => ({ ...i, anchor: { key: i.anchor.key, version: 0 } })) });
+  const notLocatedRequirements = check(before, actor, hopId, { messageId: input.messageId, items: input.items.map((i) => ({ ...i, anchor: { key: i.anchor.key, version: 0 } })) });
+  await checkRequirementAnchors(db, blueprint, projectIn(before), notLocatedRequirements);
   const reads = await checkAnchors(db, blueprint, projectIn(before), input.items);
   const items: ProposalItem[] = input.items.map((i) => ({ ...i, anchor: { key: i.anchor.key, version: labelOf(reads.get(i.anchor.key)!.body).version } }));
   const id = newId();

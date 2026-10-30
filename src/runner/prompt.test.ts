@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildChatPrompt, buildPrompt, folderNames, loadSkills, SHIPPED_SKILLS, threadOf, writeSkillsFile } from "./prompt";
+import { buildChatPrompt, buildPrompt, folderNames, loadSkills, requirementsBlock, SHIPPED_SKILLS, threadOf, writeSkillsFile } from "./prompt";
 
 const worker = { id: "w-1", name: "Blew", roles: ["BE"], skills: ["role-be"] };
 const card = { id: "c-1", number: 7, title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004" };
@@ -19,9 +19,9 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
     for (const t of ["comment", "hand_off", "set_status", "ask_operator"]) expect(p).toContain(t);
     expect(p).toMatch(/exactly one/i);
   });
-  test("tells the worker to follow every rule in spec.decisions and spec.relatedDecisions, right after card_context (REQ-112, SPEC-109 D1)", () => {
+  test("tells the worker to follow every requirement in spec.requirements and every rule in spec.decisions and spec.relatedDecisions, right after card_context (REQ-112 D1, REQ-118 SPEC-117 D1)", () => {
     expect(p).toContain("relatedDecisions");
-    expect(p).toContain("2. Follow every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context");
+    expect(p).toContain("2. Follow every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — the requirements bind every card, whatever its anchor; a rule on a related part applies to your card too.");
     expect(p.indexOf("relatedDecisions")).toBeGreaterThan(p.indexOf("1. Call the MCP tool `card_context`"));
   });
   test("SPEC-116 D3.2: with recipients it names each by name and role right after rule 3; with none the line is absent", () => {
@@ -78,7 +78,7 @@ describe("the shipped starter skills (REQ-117)", () => {
         expect(file.startsWith(`<!-- CAW's own starter skill (REQ-117, SPEC-114 D2) — an operator's <CAW_WORKSPACE_ROOT>/.claude/skills/${name}/SKILL.md overrides it -->`)).toBe(true);
         expect(file.trimEnd().endsWith("Anything a user reads — card text, comments, questions — is in Thai, short and plain.")).toBe(true);
         // the PM's Q1 answer (2026-10-30): all six tell the worker to read the card's rules before asking the operator, and that line sits before the Thai one
-        const ask = "Before you ask the operator anything, read the card's `spec.decisions` and `spec.relatedDecisions`; ask only what they do not answer.";
+        const ask = "Before you ask the operator anything, read the card's `spec.requirements`, `spec.decisions` and `spec.relatedDecisions`; ask only what they do not answer.";
         expect(file.split(ask)).toHaveLength(2);
         expect(file.indexOf(ask)).toBeLessThan(file.indexOf("Anything a user reads"));
       }
@@ -137,6 +137,12 @@ describe("buildChatPrompt (SPEC-C-004 § 1 step 3)", () => {
     expect(p).toMatch(/only for parts/i);
     expect(p).toContain("send_amendment");
     expect(p).toMatch(/always[^\n]*reply[^\n]*Thai/i);
+  });
+  test("SPEC-117 D2.3: step 2b points at the requirements in the system prompt, right after step 2; step 3 allows requirement keys from it", () => {
+    const b2 = "2b. The spec's requirements are in your system prompt (`# The spec's requirements`). Propose cards so that every requirement that asks for work is taken up by a card anchored on its key — a requirement key may be an anchor even when `locate` did not return it.";
+    expect(p).toContain(`\n${b2}\n3. `);
+    expect(p.indexOf(b2)).toBeGreaterThan(p.indexOf("\n2. Call `locate`"));
+    expect(p).toContain("only for parts `locate` returned or requirement keys from your system prompt, every item anchored on a located key");
   });
   test("carries REQ-013's exact words for the reply", () => {
     expect(p).toContain("{n} งาน ใช้ประมาณ {h} ก้าว");
@@ -286,5 +292,27 @@ describe("the setup step and the folders (TASK-C-041, REQ-015 R2/R3, D-098)", ()
     const p = prompt();
     expect(p).not.toContain("no files");
     expect(p).toContain("No git writes, no web, no file writes");
+  });
+});
+
+// REQ-118 (SPEC-117 D2.2): the entry chat hop's requirements block — appended to its system-prompt file, every text verbatim
+describe("requirementsBlock", () => {
+  const read = { revision: 7, requirements: [{ key: "REQ-001", title: "ล็อกอิน", text: "ผู้ใช้ต้องล็อกอินก่อน\nบรรทัดสอง" }, { key: "REQ-002", title: "รายงาน", text: "ส่งออก CSV" }] };
+  test("the header with the revision, then `## KEY — title` and the text verbatim, a blank line between", () => {
+    expect(requirementsBlock(read)).toBe([
+      "# The spec's requirements (Blueprint revision 7) — they bind the whole project",
+      "",
+      "## REQ-001 — ล็อกอิน",
+      "ผู้ใช้ต้องล็อกอินก่อน\nบรรทัดสอง",
+      "",
+      "## REQ-002 — รายงาน",
+      "ส่งออก CSV",
+    ].join("\n"));
+  });
+  test("no requirement → no block", () => {
+    expect(requirementsBlock({ revision: 7, requirements: [] })).toBe("");
+  });
+  test("the read failed (null) → the one-line notice", () => {
+    expect(requirementsBlock(null)).toBe("# The spec's requirements could not be read just now (Blueprint did not answer).");
   });
 });

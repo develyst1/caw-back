@@ -200,3 +200,36 @@ test("accept: a second accept → 409 not_open; a worker removed from the chain 
   expect((await w.db.select().from(events)).length).toBe(n);
   void hopHeader;
 });
+
+// REQ-118 (SPEC-117 D2.4, TASK-149): a requirement's key may be an anchor although `locate` did not return it — the prefix `REQ-` only decides whether to READ; the read's `part.kind` decides.
+// The fake's extra parts (`mode.extraParts`) are SYNTHETIC (SPEC-106 v2 route 2, until recorded).
+test("propose (REQ-118): a not-located REQ-003 that IS a requirement → 201, stored with its anchor", async () => {
+  const w = await world();
+  await w.locate();
+  w.fake.mode.extraParts["REQ-003"] = { kind: "requirement", title: "ข้อกำหนดสาม", body: { text: "ทุกหน้าต้องเป็นภาษาไทย" } };
+  const r = await w.propose([w.item({ anchor: { key: "REQ-003", version: 0 } })]);
+  expect([r.status, r.json.items[0].anchor.key]).toEqual([201, "REQ-003"]);
+});
+
+test("propose (REQ-118): a not-located REQ-003 whose part is ANOTHER kind → 422 anchor_not_located, nothing written", async () => {
+  const w = await world();
+  await w.locate();
+  w.fake.mode.extraParts["REQ-003"] = { kind: "step", title: "ไม่ใช่ข้อกำหนด", body: {} };
+  const before = (await w.db.select().from(events)).length;
+  const r = await w.propose([w.item({ anchor: { key: "REQ-003", version: 0 } })]);
+  expect([r.status, r.json.error.code, r.json.error.details]).toEqual([422, "anchor_not_located", { keys: ["REQ-003"] }]);
+  expect((await w.db.select().from(events)).length).toBe(before);
+  // a REQ- key that is no part at all is refused the same way
+  const none = await w.propose([w.item({ anchor: { key: "REQ-099", version: 0 } })]);
+  expect([none.status, none.json.error.code]).toEqual([422, "anchor_not_located"]);
+});
+
+test("propose (REQ-118): a not-located key that is NOT `REQ-` (WRK-009) → 422 anchor_not_located with no Blueprint read of it", async () => {
+  const w = await world();
+  await w.locate();
+  w.fake.mode.extraParts["WRK-009"] = { kind: "requirement", title: "ชื่อไม่ใช่ REQ", body: {} }; // even a requirement kind: the prefix says do not read
+  const reads = () => w.fake.mode.calls.filter((c) => c.includes("/spec/parts/WRK-009")).length;
+  const r = await w.propose([w.item({ anchor: { key: "WRK-009", version: 0 } })]);
+  expect([r.status, r.json.error.code, r.json.error.details]).toEqual([422, "anchor_not_located", { keys: ["WRK-009"] }]);
+  expect(reads()).toBe(0);
+});

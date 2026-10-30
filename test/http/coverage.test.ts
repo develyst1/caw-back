@@ -137,3 +137,37 @@ test("only WORK cards count, whatever their status; an anchor whose part is gone
   const r = (await w.cov()).json;
   expect(r.uncovered.map((u: any) => u.key)).toEqual(["SCR-001", "STEP-002"]);
 });
+
+// REQ-118 (SPEC-117 D3, TASK-149): requirements no card or proposal item takes up are listed under themselves. TEST-106's shape: 8 requirements, every card on REQ-001.
+// The fake's requirement parts (`snapshot.parts`, `extraParts`) are SYNTHETIC (SPEC-106 v2 routes 1–2, until recorded).
+const REQ = (n: number) => part(`REQ-00${n}`, "requirement", `ข้อกำหนด ${n}`);
+async function reqWorld() {
+  const w = await world();
+  w.fake.mode.snapshot!.parts.push(...[1, 2, 3, 4, 5, 6, 7, 8].map(REQ));
+  for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) w.fake.mode.extraParts[`REQ-00${n}`] = { kind: "requirement", title: `ข้อกำหนด ${n}`, body: { text: `ข้อ ${n}` } };
+  const reqsUncovered = async (query = "") => ((await w.cov(query)).json.uncovered as { key: string; kind: string; title: string; decisions: string[] }[]).filter((u) => u.kind === "requirement");
+  return { ...w, reqsUncovered };
+}
+
+test("(g) 8 requirements, every card on REQ-001 → REQ-002…REQ-008 are listed under themselves, sorted; REQ-001 is not", async () => {
+  const w = await reqWorld();
+  await newCard(w.call, w.project.id, { assigneeId: w.a.id, anchor: { key: "REQ-001" } });
+  const r = await w.reqsUncovered();
+  expect(r).toEqual([2, 3, 4, 5, 6, 7, 8].map((n) => ({ key: `REQ-00${n}`, kind: "requirement", title: `ข้อกำหนด ${n}`, decisions: [`REQ-00${n}`] })));
+});
+
+test("(g) a proposal item on REQ-004 takes it up (with proposalId); without it REQ-004 is still listed", async () => {
+  const w = await reqWorld();
+  await newCard(w.call, w.project.id, { assigneeId: w.a.id, anchor: { key: "REQ-001" } });
+  const p = await w.proposeOn(w.project.id, w.msg.id, "REQ-004");
+  expect((await w.reqsUncovered()).map((u) => u.key)).toContain("REQ-004");
+  expect((await w.reqsUncovered(`?proposalId=${p}`)).map((u) => u.key)).toEqual(["REQ-002", "REQ-003", "REQ-005", "REQ-006", "REQ-007", "REQ-008"]);
+});
+
+test("(g) a card on a work part takes up no requirement: with only the SCR-001 card, all 8 are listed; a removed requirement is not", async () => {
+  const w = await reqWorld();
+  expect((await w.reqsUncovered()).map((u) => u.key)).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map((n) => `REQ-00${n}`));
+  w.fake.mode.snapshot!.parts = w.fake.mode.snapshot!.parts.filter((p) => (p as { key: string }).key !== "REQ-008"); // REQ-008 leaves the spec
+  w.fake.mode.spec.revision = 2;
+  expect((await w.reqsUncovered()).map((u) => u.key)).toEqual([1, 2, 3, 4, 5, 6, 7].map((n) => `REQ-00${n}`));
+});

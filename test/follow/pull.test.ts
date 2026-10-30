@@ -210,3 +210,35 @@ test("two pulls at once (a tick and a notice) do not double-write: the second se
   await Promise.all([w.follow.pullAll(), w.follow.pullFor(BP_PROJECT), w.follow.pullAll()]);
   expect(await w.revised()).toHaveLength(1);
 });
+
+// REQ-118 (SPEC-117 D4, TASK-149): a change set that touches a requirement (a `REQ-` key) flags EVERY card older than it — the requirements are in every card's context.
+test("pull (REQ-118): editing REQ-005 flags every card (not only the ones anchored on it); a card cut after that set is not flagged", async () => {
+  const w = await world();
+  const a = await w.card("STEP-004");
+  const b = await w.card("STEP-001");
+  const c = await w.card("STEP-002");
+  w.edit(2, { changed: ["REQ-005"] });
+  const late = await w.card("STEP-004"); // cut at revision 2: the set is not newer than it
+  await w.follow.pullAll();
+  const evs = await w.revised();
+  expect(evs).toHaveLength(1);
+  expect({ ...evs[0]!, cardIds: [...evs[0]!.cardIds].sort() }).toMatchObject({ revision: 2, cardIds: [a.id, b.id, c.id].sort() });
+  for (const card of [a, b, c]) expect(await w.get(card.id)).toMatchObject({ specChangedVersion: 2, workable: true }); // show-only: nothing stops
+  expect((await w.get(late.id)).specChangedVersion).toBeNull();
+  expect((await w.call("POST", `/v1/projects/${w.project.id}/rebuild-check`)).json).toEqual({ same: true });
+});
+
+test("pull (REQ-118): a requirement added or removed flags every card too; editing WRK-001 flags only the cards anchored on its own key (unchanged)", async () => {
+  const w = await world();
+  const a = await w.card("STEP-004");
+  const b = await w.card("STEP-001");
+  w.edit(2, { changed: ["STEP-004", "WRK-001"] }); // WRK-001 is no requirement: only STEP-004's card
+  await w.follow.pullAll();
+  expect((await w.revised()).at(-1)!.cardIds).toEqual([a.id]);
+  w.edit(3, { added: ["REQ-009"] });
+  await w.follow.pullAll();
+  expect([...(await w.revised()).at(-1)!.cardIds].sort()).toEqual([a.id, b.id].sort());
+  w.edit(4, { removed: ["REQ-009"] });
+  await w.follow.pullAll();
+  expect([...(await w.revised()).at(-1)!.cardIds].sort()).toEqual([a.id, b.id].sort());
+});

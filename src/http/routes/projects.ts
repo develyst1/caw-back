@@ -2,6 +2,7 @@ import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import type { Blueprint } from "../../blueprint/client";
 import type { Db } from "../../db/client";
 import { coverage } from "../../projects/coverage";
+import { requirements } from "../../projects/requirements";
 import { checkRebuild, confirmCodeMap, createProject, getProject, listEvents, listProjects, projectView, readPart, saveCodeMap, setMode, setWorkspace } from "../../projects/service";
 import { type Env, requireOperator } from "../actor";
 import { errors } from "../errors";
@@ -50,6 +51,12 @@ const CoverageSchema = z.object({
   })).openapi({ description: "sorted by key; empty = every rule is covered" }),
 }).openapi("Coverage");
 
+// REQ-118 (SPEC-117 D2.1): every requirement of the current spec, with its text — for the entry chat hop's system prompt
+const RequirementsSchema = z.object({
+  revision: z.number().int().openapi({ description: "the spec revision the answer was read at" }),
+  requirements: z.array(z.object({ key: z.string(), title: z.string(), text: z.string() })).openapi({ description: "every `requirement` part of Blueprint's current spec, by key (numeric-aware: REQ-002 before REQ-010); empty = none" }),
+}).openapi("Requirements");
+
 export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) {
   app.openapi(createRoute({
     method: "post", path: "/v1/projects",
@@ -76,6 +83,12 @@ export function projectRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprin
     method: "get", path: "/v1/projects/{projectId}/coverage", request: { params: z.object({ projectId: z.string() }), query: z.object({ proposalId: z.string().uuid().optional() }) },
     responses: { 200: json(CoverageSchema, "the decisions of Blueprint's current spec that no work card (nor the asked-for proposal) covers"), 400: errors[400], 404: errors[404], 502: errors[502] },
   }), async (c) => c.json(await coverage(db, blueprint, c.req.valid("param").projectId, c.req.valid("query").proposalId), 200));
+
+  // REQ-118 (SPEC-117 D2.1): read only; any actor may read it
+  app.openapi(createRoute({
+    method: "get", path: "/v1/projects/{projectId}/requirements", request: { params: z.object({ projectId: z.string() }) },
+    responses: { 200: json(RequirementsSchema, "the requirements of Blueprint's current spec, with their text"), 404: errors[404], 502: errors[502] },
+  }), async (c) => c.json(await requirements(db, blueprint, c.req.valid("param").projectId), 200));
 
   app.openapi(createRoute({
     method: "patch", path: "/v1/projects/{id}/mode",

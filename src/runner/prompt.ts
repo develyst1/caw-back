@@ -19,8 +19,9 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
     `Your card is ${card.id} (#${card.number}) in project ${projectId}.`,
     "",
     "1. Call the MCP tool `card_context` first (with that cardId), then do the work.",
-    // REQ-112 (SPEC-109 D1): a rule on a related part binds the card too — Blueprint puts those in `spec.relatedDecisions`
-    "2. Follow every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — a rule on a related part applies to your card too.",
+    // REQ-112 (SPEC-109 D1): a rule on a related part binds the card too — Blueprint puts those in `spec.relatedDecisions`.
+    // REQ-118 (SPEC-117 D1): every requirement binds every card — Blueprint puts them in the part context's `requirements` field
+    "2. Follow every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — the requirements bind every card, whatever its anchor; a rule on a related part applies to your card too.",
     "3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
     // SPEC-116 D3.2: the only other place a worker learns whom it may hand to is the refusal — say it up front, by name and role
     ...(recipients.length === 0 ? [] : [`You may hand off to: ${recipients.map((r) => `${r.name} (${r.roles.join(" + ")})`).join(", ")} — pass the name (or the id) as \`toWorkerId\` of \`hand_off\`.`]),
@@ -51,6 +52,16 @@ export function loadSkills(workspaceRoot: string, names: readonly string[], read
     parts.push(`# Skill: ${name}\n\n${read(path)}`);
   }
   return { ok: true, text: parts.join("\n\n---\n\n") };
+}
+
+export type Requirements = { revision: number; requirements: { key: string; title: string; text: string }[] };
+
+/** The entry chat hop's requirements block, appended to its system-prompt file (SPEC-117 D2.2): every requirement, `text` verbatim.
+ *  `null` = the read failed → the one-line notice; no requirement → "" (no block). */
+export function requirementsBlock(read: Requirements | null): string {
+  if (read === null) return "# The spec's requirements could not be read just now (Blueprint did not answer).";
+  if (read.requirements.length === 0) return "";
+  return [`# The spec's requirements (Blueprint revision ${read.revision}) — they bind the whole project`, ...read.requirements.map((r) => `## ${r.key} — ${r.title}\n${r.text}`)].join("\n\n");
 }
 
 export function writeSkillsFile(dir: string, text: string): string {
@@ -121,7 +132,9 @@ export function buildChatPrompt(input: { worker: PromptWorker; messageId: string
     "",
     "1. Read it with the MCP tool `chat_context` (messageId above).",
     `2. Call \`locate\` { projectId: "${projectId}", request } before anything else: it tells you which parts of the confirmed spec the request touches.`,
-    "3. If `locate` returned parts (candidates) for the request, propose cards for them with `propose_cards` — only for parts `locate` returned, every item anchored on a located key, each with your estimate of `hops`. Nothing is made until the operator accepts. Missing details are not a reason to hold the proposal back: put the questions in your reply (step 5).",
+    // REQ-118 (SPEC-117 D2.3): the requirements are in the system prompt (hop.ts appends the block), and their keys may be anchors
+    "2b. The spec's requirements are in your system prompt (`# The spec's requirements`). Propose cards so that every requirement that asks for work is taken up by a card anchored on its key — a requirement key may be an anchor even when `locate` did not return it.",
+    "3. If `locate` returned parts (candidates) for the request, propose cards for them with `propose_cards` — only for parts `locate` returned or requirement keys from your system prompt, every item anchored on a located key, each with your estimate of `hops`. Nothing is made until the operator accepts. Missing details are not a reason to hold the proposal back: put the questions in your reply (step 5).",
     "4. Use `send_amendment` ONLY for what `locate` did not return (`notInSpec`), or when the request changes the spec itself — it asks Blueprint's chat to change the spec; do not invent a card for it.",
     "5. If you need decisions first, put ALL your questions in the one reply as `questions[]`, each with `text`, `proposedDefault` and `cases` — never one question at a time.",
     "6. Always end with exactly one `reply` in Thai. `reply` is mandatory — if you cannot do anything else, reply and say what blocks you.",

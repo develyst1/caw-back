@@ -2,6 +2,7 @@
 //   anchors   = the anchor keys of every WORK card of the project (any status — a done card covered its rules), plus the open proposal's item anchors when one is asked for;
 //   covered   = each anchor that is itself a decision, plus every decision its context lists in `decisions` and `relatedDecisions[].decision`;
 //   uncovered = every `decision` part of the spec not covered, grouped under the parts it `covers` (a decision that covers nothing is grouped under itself).
+//   plus (REQ-118) every `requirement` part no card or proposal item is anchored on, listed under itself.
 // Nothing is stored: the answer is kept in process memory per (project, spec revision, anchors) — the board asks again whenever the event log grows.
 import type { Blueprint } from "../blueprint/client";
 import { readLatestPart } from "../blueprint/latest";
@@ -54,6 +55,10 @@ export async function coverage(db: Db, blueprint: Blueprint, projectId: string, 
     const targets = links.filter((l) => l.kind === "covers" && l.fromKey === d.key).map((l) => l.toKey);
     for (const t of targets.length ? targets : [d.key]) under.set(t, (under.get(t) ?? new Set()).add(d.key));
   }
+  // REQ-118 (SPEC-117 D3): a requirement binds every card but is only TAKEN UP by a card (or proposal item) anchored on its key — seen in a context is not enough.
+  // Listed under itself, like a decision that covers nothing; a removed requirement is not in `parts`, so it is not listed.
+  const taken = new Set(anchors);
+  for (const r of parts.filter((p) => p.kind === "requirement" && !taken.has(p.key))) under.set(r.key, (under.get(r.key) ?? new Set()).add(r.key));
   const uncovered = [...under].map(([key, ds]): Uncovered => ({ key, kind: partOf.get(key)?.kind ?? "", title: partOf.get(key)?.title ?? "", decisions: [...ds].sort() }))
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 

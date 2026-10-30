@@ -80,7 +80,9 @@ export function createFollower(db: Db, blueprint: Blueprint, log: (line: string)
     try {
       await writeDecided(db, projectId, (s) => {
         const out: CawEvent[] = [];
-        const cardIds = s.cards.filter((c) => ordered.some((v) => (v.changed.includes(c.anchorKey) || v.removed.includes(c.anchorKey)) && c.anchorRevision < v.rev)).map((c) => c.id);
+        // REQ-118 (SPEC-117 D4): a set that adds, edits or removes a requirement (a `REQ-` key) flags EVERY card older than it — the requirements are in every card's context. Show-only, as before.
+        const touchesRequirement = (v: SpecChange) => [...v.added, ...v.changed, ...v.removed].some((k) => k.startsWith("REQ-"));
+        const cardIds = s.cards.filter((c) => ordered.some((v) => (touchesRequirement(v) || v.changed.includes(c.anchorKey) || v.removed.includes(c.anchorKey)) && c.anchorRevision < v.rev)).map((c) => c.id);
         if (cardIds.length > 0 || !sameLabel) out.push({ type: "spec.revised", projectId, actor: "system:pull", at: now(), data: { revision, latestLabel: label, cardIds } });
         // one event per (kind, revision): the cards whose part just left the spec / just came back, by the set that did it
         const gone = new Map<number, string[]>();

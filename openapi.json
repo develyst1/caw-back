@@ -1237,6 +1237,42 @@
         ],
         "type": "object"
       },
+      "Requirements": {
+        "properties": {
+          "requirements": {
+            "description": "every `requirement` part of Blueprint's current spec, by key (numeric-aware: REQ-002 before REQ-010); empty = none",
+            "items": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "title",
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "the spec revision the answer was read at",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "requirements"
+        ],
+        "type": "object"
+      },
       "Run": {
         "properties": {
           "endedAt": {
@@ -5128,6 +5164,52 @@
               }
             },
             "description": "validation · actor_required · unknown_worker · anchor_required · not_a_member · not_a_question · hop_required"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "not_found · blueprint_project_not_found"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "blueprint_unreachable"
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/requirements": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "projectId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Requirements"
+                }
+              }
+            },
+            "description": "the requirements of Blueprint's current spec, with their text"
           },
           "404": {
             "content": {

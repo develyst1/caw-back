@@ -5,7 +5,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutcome, type Project, type Worker, RunnerApiError, readOnlyOf } from "./api";
 import type { RunnerConfig } from "./config";
-import { type Thread, buildChatPrompt, buildPrompt, folderNames, loadSkills, threadOf, writeSkillsFile } from "./prompt";
+import { type Thread, buildChatPrompt, buildPrompt, folderNames, loadSkills, requirementsBlock, threadOf, writeSkillsFile } from "./prompt";
 import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
 import type { Code } from "./bash-policy";
 import { redact } from "./redact";
@@ -237,6 +237,17 @@ async function recipientsOf(deps: HopDeps, projectId: string, workerId: string):
   }
 }
 
+/** The entry chat hop's requirements block (SPEC-117 D2.2). A requirements read that fails is logged (code and message only, never spec text) and the hop goes on with
+ *  the one-line notice: its `locate` meets the same outage and the worker replies with what blocks it. */
+async function requirementsFor(deps: HopDeps, projectId: string): Promise<string> {
+  try {
+    return requirementsBlock(await deps.api.requirements(projectId));
+  } catch (e) {
+    deps.log(`project ${projectId}: the requirements could not be read for the chat hop (${e instanceof Error ? e.message : String(e)}) — the hop goes on with the notice`);
+    return requirementsBlock(null);
+  }
+}
+
 export async function eventsAfter(api: Api, projectId: string, after: number): Promise<ApiEvent[]> {
   const all: ApiEvent[] = [];
   for (;;) {
@@ -334,7 +345,9 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const mcpFile = join(dir, "mcp.json");
     writeFileSync(mcpFile, JSON.stringify(buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
-    const skillsFile = skills.text === "" ? null : writeSkillsFile(dir, skills.text);
+    // A chat hop also carries every requirement of the spec, in the same system-prompt file — not argv: n × 4000 Thai characters can pass the single-argument limit (SPEC-117 D2.2)
+    const systemText = messageId === null ? skills.text : [skills.text, await requirementsFor(deps, project.id)].filter((t) => t !== "").join("\n\n---\n\n");
+    const skillsFile = systemText === "" ? null : writeSkillsFile(dir, systemText);
     const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id, recipients: await recipientsOf(deps, project.id, worker.id) });
     // EVERY hop gets its own settings file = the runner's base + the read fence (UP-3: reads only inside the roots and this hop's folder) + the read-only
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
