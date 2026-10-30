@@ -8,7 +8,7 @@
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RunnerApiError, createApi, type Hop, type Project, type StopReason } from "./api";
+import { RunnerApiError, createApi, type Hop, type HopOutcome, type Project, type StopReason } from "./api";
 import { ConfigError, loadConfig } from "./config";
 import { GuardError, probeHooks } from "./guard";
 import { type Child, type HopDeps, NOTES, bunSpawn, eventsAfter, runHop } from "./hop";
@@ -22,6 +22,9 @@ import { secretValues } from "./screen";
 import { TRACE_KEEP, rotateTraces, traceDirFrom } from "./trace";
 
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** a hop that moved the card — it stops the count of turns without progress (SPEC-116 D4; a file written alone is not visible to the runner) */
+const PROGRESS = new Set<HopOutcome>(["handed_off", "status"]);
 
 /** REQ-012's words for why a run ended (decided 2026-10-14). */
 const stopWords = (reason: StopReason, resetsAt: number | null, now: Date): string => ({
@@ -232,8 +235,12 @@ export function createRunner(deps: HopDeps & { instance: string }) {
             return null;
           });
           if (card) {
-            const n = hops.filter((h) => h.runId === action.runId && h.cardId === card.id && h.outcome !== null && h.outcome !== "interrupted").length;
-            return await endRun(project.id, action.runId, "no_progress", `#${card.number} ${card.title} ยังทำต่อได้ แต่ทำ ${n} รอบแล้วไม่คืบ — กด "อัตโนมัติ" เพื่อลองต่อ หรือเปิดการ์ดดู`);
+            // SPEC-116 D4: count the turns since the card's last progress — newest first, up to the first hop that moved it
+            const ended = hops.filter((h) => h.runId === action.runId && h.cardId === card.id && h.outcome !== null && h.outcome !== "interrupted").sort((a, b) => (a.id < b.id ? 1 : -1));
+            const turns = ended.findIndex((h) => PROGRESS.has(h.outcome!));
+            const n = turns === -1 ? ended.length : turns;
+            // 0 turns = the newest hop moved the card yet it is still workable: no number is true, so the generic words (D4 "Reachable 0")
+            if (n > 0) return await endRun(project.id, action.runId, "no_progress", `#${card.number} ${card.title} ยังทำต่อได้ แต่ทำ ${n} รอบแล้วไม่คืบ — กด "อัตโนมัติ" เพื่อลองต่อ หรือเปิดการ์ดดู`);
           }
         }
         return await endRun(project.id, action.runId, action.reason);

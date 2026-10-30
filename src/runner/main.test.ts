@@ -3,7 +3,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chainOf3, newCard, setup } from "../../test/helpers/api";
+import { chainOf3, mkWorker, newCard, setup } from "../../test/helpers/api";
 import { RunnerApiError, createApi } from "./api";
 import { type HopFile, type Procs, readHopFile, writeHopFile } from "./procs";
 import { HOOKS } from "./config";
@@ -330,6 +330,38 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     expect(run!.stopReason).toBe("no_progress");
     expect(run!.report).toContain(`- เหตุที่จบรอบ: #1 ${a.cards[0]!.title} ยังทำต่อได้ แต่ทำ 2 รอบแล้วไม่คืบ — กด "อัตโนมัติ" เพื่อลองต่อ หรือเปิดการ์ดดู`);
     expect(run!.report).not.toContain("ไม่มีงานที่ทำต่อได้");
+  });
+
+  test("SPEC-116 D4 (AC-4, TEST-116 S2): comment, hand off to a second worker, who only comments twice → the line counts the second worker's 2 turns, not 4", async () => {
+    const a = await auto(1, 10);
+    const second = await mkWorker(a.call, "Second", "BE", ["role-be"]);
+    await a.call("POST", `/v1/projects/${a.project.id}/chain/members`, { workerId: second.id });
+    await a.call("POST", `/v1/projects/${a.project.id}/chain/edges`, { from: a.worker.id, to: second.id });
+    let turn = 0;
+    a.how[a.cards[0]!.id] = async (id) => {
+      turn++;
+      if (turn === 1) await a.call("POST", `/v1/cards/${id}/comments`, { text: "thinking" }, a.actor);
+      else if (turn === 2) await a.call("POST", `/v1/cards/${id}/handoff`, { toWorkerId: second.id, text: "over to you" }, a.actor);
+      else await a.call("POST", `/v1/cards/${id}/comments`, { text: "still thinking" }, `worker:${second.id}`);
+    };
+    await a.drive(a.runner());
+    const hops = await a.hopsOldestFirst();
+    expect(hops.map((h) => [h.workerId === a.worker.id ? "first" : "second", h.outcome])).toEqual([["first", "commented"], ["first", "handed_off"], ["second", "commented"], ["second", "commented"]]);
+    const [run] = await a.runs();
+    expect(run!.stopReason).toBe("no_progress");
+    expect(run!.report).toContain("ทำ 2 รอบแล้วไม่คืบ");
+    expect(run!.report).not.toContain("ทำ 4 รอบ");
+  });
+
+  test("SPEC-116 D4 (reachable 0): a card whose only hop moves it todo → doing and leaves it workable → no_progress with the generic words, never `ทำ 0 รอบ`", async () => {
+    const a = await auto(1, 10);
+    a.how[a.cards[0]!.id] = async (id) => { await a.call("PATCH", `/v1/cards/${id}/status`, { status: "doing" }, a.actor); };
+    await a.drive(a.runner());
+    expect((await a.hopsOldestFirst()).map((h) => h.outcome)).toEqual(["status"]);
+    const [run] = await a.runs();
+    expect(run!.stopReason).toBe("no_progress");
+    expect(run!.report).toContain("เหตุที่จบรอบ: มีงานที่ยังทำต่อได้ แต่ไม่คืบ");
+    expect(run!.report).not.toContain("ทำ 0 รอบ");
   });
 
   test("SPEC-116: no_progress with a card that cannot be read still closes the run, with the generic words", async () => {
