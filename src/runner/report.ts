@@ -4,7 +4,11 @@
 import type { ApiEvent, Hop } from "./api";
 import { formatDuration } from "./thai";
 
-export type ReportCard = { id: string; number: number; title: string; kind: "work" | "question"; status: string; question: { text: string } | null; answer: string | null };
+export type ReportCard = {
+  id: string; number: number; title: string; kind: "work" | "question"; status: string; question: { text: string } | null; answer: string | null;
+  /** the ids of the cards this one waits for (REQ-117, SPEC-114 D3); missing = none */
+  dependsOn?: string[];
+};
 export type ReportInput = {
   run: { hopBudget: number; startedAt: string };
   now: Date;
@@ -53,6 +57,32 @@ export function buildReport(i: ReportInput): string {
     .sort((a, b) => a.number - b.number)
     .map((c) => `- #${c.number} ${c.question?.text ?? c.title}`);
 
+  // REQ-117 (SPEC-114 D3): a work card in review that holds work up is a "รอคุณ" line too. waiting = the work cards not `done` that depend on it, directly or through
+  // other cards (each counted once; a cycle cannot loop). A `done` card ENDS the walk: a card whose own dependencies are done is workable (cards/view.ts), so a not-done card behind a done
+  // one is not waiting on the review (SA's REWORK round 1; SPEC-114 D3 clarified). A review card that holds nothing up is not listed (SPEC Q2 default).
+  const dependants = new Map<string, string[]>();
+  for (const c of i.cards) for (const d of c.dependsOn ?? []) dependants.set(d, [...(dependants.get(d) ?? []), c.id]);
+  const waitingOn = (cardId: string): number => {
+    const seen = new Set<string>([cardId]);
+    const queue = [cardId];
+    let count = 0;
+    for (let at = queue.shift(); at !== undefined; at = queue.shift()) {
+      for (const id of dependants.get(at) ?? []) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const c = byId.get(id);
+        if (c?.status === "done") continue; // not counted, and nothing behind it is reached through it
+        queue.push(id);
+        if (c && c.kind === "work") count++;
+      }
+    }
+    return count;
+  };
+  const reviews = i.cards
+    .filter((c) => c.kind === "work" && c.status === "review")
+    .sort((a, b) => a.number - b.number)
+    .flatMap((c) => { const w = waitingOn(c.id); return w >= 1 ? [`- รอคุณตรวจ: ${c.title} — มีอีก ${w} งานรออยู่`] : []; });
+
   const hops = [...i.hops].sort((a, b) => (a.id < b.id ? -1 : 1));
   const problems = hops.flatMap((h, k) =>
     h.outcome === null
@@ -73,7 +103,7 @@ export function buildReport(i: ReportInput): string {
   const text = [
     "เสร็จแล้ว", ...(done.length ? done : [NONE]),
     "ทีมตัดสินเอง", ...(decided.length ? decided : [NONE]),
-    "รอคุณ", ...(waiting.length ? waiting : [NONE]),
+    "รอคุณ", ...(waiting.length || reviews.length ? [...waiting, ...reviews] : [NONE]),
     "ปัญหา", ...problems,
     "ค่าใช้จ่าย", ...cost,
   ].join("\n");

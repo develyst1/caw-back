@@ -130,3 +130,43 @@ describe("one vocabulary with the screens (REQ-012 l.49): Thai statuses, never t
     expect(text).not.toContain("archived");
   });
 });
+
+// REQ-117 (SPEC-114 D3): a work card in `review` that holds work up is a "รอคุณ" line, after the open questions. waiting = work cards not `done` that depend on it, directly or through other cards.
+describe("buildReport — a review that holds work up (REQ-117)", () => {
+  /** the lines under "รอคุณ" */
+  const waitingLines = (text: string) => text.split("\n").slice(text.split("\n").indexOf("รอคุณ") + 1, text.split("\n").indexOf("ปัญหา"));
+  const report = (cards: ReturnType<typeof card>[]) => buildReport(base({ cards }));
+
+  test("(e) AC-2: #1 in review, #2 and #3 todo depending on #1 → one line naming #1 and 2 waiting; no '- ไม่มี' under รอคุณ", () => {
+    const lines = waitingLines(report([card(1, "ทำหน้าอนุมัติ", "review"), card(2, "ออกแบบตาราง", "todo", { dependsOn: ["c1"] }), card(3, "ส่งอีเมล", "todo", { dependsOn: ["c1"] })]));
+    expect(lines).toEqual(["- รอคุณตรวจ: ทำหน้าอนุมัติ — มีอีก 2 งานรออยู่"]);
+  });
+  test("(f) a chain #3 → #2 → #1 (#2 todo) counts 2; a done dependant is not counted; a done card ENDS the walk (#3 todo → #2 done → #1 review: 0 → no line); a cycle cannot loop; a question card is not work", () => {
+    // SA's REWORK round 1: #2 is done, so #3's own dependency is done — #3 is workable, not waiting on #1
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "B", "done", { dependsOn: ["c1"] }), card(3, "C", "todo", { dependsOn: ["c2"] })]))).toEqual(["- ไม่มี"]);
+    // …but a card that ALSO depends on #1 directly still waits, whatever is behind the done card
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "B", "done", { dependsOn: ["c1"] }), card(3, "C", "todo", { dependsOn: ["c2", "c1"] })]))).toEqual(["- รอคุณตรวจ: A — มีอีก 1 งานรออยู่"]);
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "B", "todo", { dependsOn: ["c1"] }), card(3, "C", "todo", { dependsOn: ["c2"] })]))).toEqual(["- รอคุณตรวจ: A — มีอีก 2 งานรออยู่"]);
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "B", "todo", { dependsOn: ["c1"] }), card(3, "C", "done", { dependsOn: ["c1"] })]))).toEqual(["- รอคุณตรวจ: A — มีอีก 1 งานรออยู่"]);
+    // each card once, however many paths lead to it (#4 depends on both #2 and #3), and a cycle (#2 ⇄ #3) ends
+    expect(waitingLines(report([
+      card(1, "A", "review"), card(2, "B", "todo", { dependsOn: ["c1", "c3"] }), card(3, "C", "todo", { dependsOn: ["c1", "c2"] }), card(4, "D", "todo", { dependsOn: ["c2", "c3"] }),
+    ]))).toEqual(["- รอคุณตรวจ: A — มีอีก 3 งานรออยู่"]);
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "Q", "todo", { kind: "question", question: { text: "?" }, dependsOn: ["c1"] })]))).toEqual(["- #2 ?"]); // only its own open-question line: it is not a waiting work card, so #1 gets no review line
+  });
+  test("(g) AC-3: a review card nothing depends on → no line, and '- ไม่มี' stays; no dependsOn at all (an old card) is none", () => {
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "B", "todo")]))).toEqual(["- ไม่มี"]);
+    expect(waitingLines(report([card(1, "A", "review"), card(2, "B", "todo", { dependsOn: [] })]))).toEqual(["- ไม่มี"]);
+  });
+  test("(h) an open question and a review line together: the question first, then the reviews by card number; no '- ไม่มี'", () => {
+    const lines = waitingLines(report([
+      card(5, "งานรอ", "todo", { dependsOn: ["c3", "c2"] }),
+      card(3, "ตรวจทีหลัง", "review"), card(2, "ตรวจก่อน", "review"),
+      card(4, "ถามเรื่องสี", "todo", { kind: "question", question: { text: "ใช้สีไหน?" } }),
+    ]));
+    expect(lines).toEqual(["- #4 ใช้สีไหน?", "- รอคุณตรวจ: ตรวจก่อน — มีอีก 1 งานรออยู่", "- รอคุณตรวจ: ตรวจทีหลัง — มีอีก 1 งานรออยู่"]);
+  });
+  test("only a work card in review counts as one that waits to be checked: a todo / doing / done card with dependants is not a line", () => {
+    for (const status of ["todo", "doing", "done", "stuck"]) expect(waitingLines(report([card(1, "A", status), card(2, "B", "todo", { dependsOn: ["c1"] })]))).toEqual(["- ไม่มี"]);
+  });
+});

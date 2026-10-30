@@ -17,6 +17,8 @@ export type Worker = { id: string; name: string; roles: string[]; skills: string
 export type Card = {
   id: string; projectId: string; number: number; title: string; todo: string; status: string; assigneeId: string | null;
   kind: "work" | "question"; question: { text: string; proposedDefault: string; cases: string[] } | null; answer: string | null;
+  /** the ids of the cards this one waits for (REQ-117: the report counts who waits on a review) — the API already sends it */
+  dependsOn: string[];
 };
 export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_twice" | "limit_reached" | "operator_stopped" | "error";
 export type Run = {

@@ -1,8 +1,9 @@
 // What one hop tells the worker (SPEC-C-003 § 2), and how its role skills reach it (R-6).
 // A worker's cwd is a project repo, so the workspace's `.claude/skills` are not on its path: the runner reads each
-// `worker.skills[i]` from <workspace>/.claude/skills/<name>/SKILL.md and appends them to the system prompt.
+// `worker.skills[i]` — first from <workspace>/.claude/skills/<name>/SKILL.md, then from CAW's own shipped starter skills (REQ-117, SPEC-114 D1) — and appends them to the system prompt.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ChatMessage } from "./api";
 
 export type PromptWorker = { id: string; name: string; roles: string[]; skills: string[] };
@@ -27,13 +28,21 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
 /** A skill name is a folder name: letters, digits, `.`, `_`, `-` — anything that could leave the skills folder is "missing". */
 const SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** CAW's own starter skills: `skills/<name>/SKILL.md` at the repo root (the six role names). A fallback, never a copy — nothing is written into the user's folder. */
+export const SHIPPED_SKILLS = fileURLToPath(new URL("../../skills/", import.meta.url));
+
 export type SkillsResult = { ok: true; text: string } | { ok: false; missing: string };
 
+/** Each name: the workspace's own `<root>/.claude/skills/<name>/SKILL.md` first (an operator's skill wins), else CAW's shipped one, else `{ ok: false, missing }`.
+ *  The name checks (`SAFE`, no `..`) run before either path is built. */
 export function loadSkills(workspaceRoot: string, names: readonly string[], read: (path: string) => string = (p) => readFileSync(p, "utf8")): SkillsResult {
   const parts: string[] = [];
   for (const name of names) {
-    const path = join(workspaceRoot, ".claude", "skills", name, "SKILL.md");
-    if (!SAFE.test(name) || name.includes("..") || !existsSync(path)) return { ok: false, missing: name };
+    if (!SAFE.test(name) || name.includes("..")) return { ok: false, missing: name };
+    const own = join(workspaceRoot, ".claude", "skills", name, "SKILL.md");
+    const shipped = join(SHIPPED_SKILLS, name, "SKILL.md");
+    const path = existsSync(own) ? own : existsSync(shipped) ? shipped : null;
+    if (path === null) return { ok: false, missing: name };
     parts.push(`# Skill: ${name}\n\n${read(path)}`);
   }
   return { ok: true, text: parts.join("\n\n---\n\n") };

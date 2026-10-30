@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildChatPrompt, buildPrompt, folderNames, loadSkills, threadOf, writeSkillsFile } from "./prompt";
+import { buildChatPrompt, buildPrompt, folderNames, loadSkills, SHIPPED_SKILLS, threadOf, writeSkillsFile } from "./prompt";
 
 const worker = { id: "w-1", name: "Blew", roles: ["BE"], skills: ["role-be"] };
 const card = { id: "c-1", number: 7, title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004" };
@@ -27,6 +27,58 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
   test("forbids git writes and web", () => {
     expect(p).toMatch(/no git/i);
     expect(p).toMatch(/no web/i);
+  });
+});
+
+// REQ-117 (SPEC-114 D1/D2): CAW ships its own six role skills and loadSkills falls back to them — a fresh workspace root must not stop the first hop
+describe("the shipped starter skills (REQ-117)", () => {
+  const SIX = ["role-pm", "role-ba", "role-sa", "role-fe", "role-be", "role-qa"];
+  const emptyRoot = () => mkdtempSync(join(tmpdir(), "caw-empty-root-"));
+  const firstLine = (name: string) => readFileSync(join(SHIPPED_SKILLS, name, "SKILL.md"), "utf8").split("\n")[0]!;
+
+  test("(a) an EMPTY root: role-pm loads, and its text holds the shipped file's first line", () => {
+    const root = emptyRoot();
+    try {
+      const r = loadSkills(root, ["role-pm"]);
+      expect(r.ok).toBe(true);
+      expect((r as { text: string }).text).toContain(firstLine("role-pm"));
+      expect((r as { text: string }).text).toContain("You are the team's PM.");
+    } finally { rmSync(root, { recursive: true }); }
+  });
+  test("(b) a root that has its OWN role-pm: its text is used, the shipped one is not", () => {
+    const root = emptyRoot();
+    try {
+      mkdirSync(join(root, ".claude/skills/role-pm"), { recursive: true });
+      writeFileSync(join(root, ".claude/skills/role-pm/SKILL.md"), "THE OPERATOR'S OWN PM");
+      const text = (loadSkills(root, ["role-pm", "role-sa"]) as { text: string }).text;
+      expect(text).toContain("THE OPERATOR'S OWN PM");
+      expect(text).not.toContain(firstLine("role-pm"));
+      expect(text).toContain(firstLine("role-sa")); // the other name still falls back
+    } finally { rmSync(root, { recursive: true }); }
+  });
+  test("(c) every one of the six names loads from an empty root, in order, each headed by its name; each file starts with the comment and ends with the Thai line", () => {
+    const root = emptyRoot();
+    try {
+      const r = loadSkills(root, SIX);
+      expect(r.ok).toBe(true);
+      const text = (r as { text: string }).text;
+      SIX.forEach((name, k) => { expect(text).toContain(`# Skill: ${name}`); if (k > 0) expect(text.indexOf(`# Skill: ${name}`)).toBeGreaterThan(text.indexOf(`# Skill: ${SIX[k - 1]}`)); });
+      for (const name of SIX) {
+        const file = readFileSync(join(SHIPPED_SKILLS, name, "SKILL.md"), "utf8");
+        expect(file.startsWith(`<!-- CAW's own starter skill (REQ-117, SPEC-114 D2) — an operator's <CAW_WORKSPACE_ROOT>/.claude/skills/${name}/SKILL.md overrides it -->`)).toBe(true);
+        expect(file.trimEnd().endsWith("Anything a user reads — card text, comments, questions — is in Thai, short and plain.")).toBe(true);
+        // the PM's Q1 answer (2026-10-30): all six tell the worker to read the card's rules before asking the operator, and that line sits before the Thai one
+        const ask = "Before you ask the operator anything, read the card's `spec.decisions` and `spec.relatedDecisions`; ask only what they do not answer.";
+        expect(file.split(ask)).toHaveLength(2);
+        expect(file.indexOf(ask)).toBeLessThan(file.indexOf("Anything a user reads"));
+      }
+    } finally { rmSync(root, { recursive: true }); }
+  });
+  test("(d) the name checks hold for the shipped folder too: `../x`, `a/b` and a path into the shipped folder are missing; a name that exists nowhere is missing", () => {
+    const root = emptyRoot();
+    try {
+      for (const bad of ["../x", "a/b", "../skills/role-pm", "..", "no-such-skill"]) expect(loadSkills(root, ["role-pm", bad])).toEqual({ ok: false, missing: bad });
+    } finally { rmSync(root, { recursive: true }); }
   });
 });
 
