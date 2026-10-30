@@ -225,3 +225,14 @@ describe("lineReader (one reader for the life of the process)", () => {
     expect(await r.next()).toBeNull();
   });
 });
+
+// REQ-126 (SPEC-125 D6): the environment hop.ts builds (TMPDIR / XDG_CACHE_HOME of the worker's own folder) reaches the open process as given — the pool adds nothing and takes nothing away
+describe("the environment of an open process", () => {
+  test("`acquire` hands the caller's env, cwd and stdin: pipe to the spawner untouched", async () => {
+    const seen: { cwd: string; env: Record<string, string | undefined>; stdin?: "pipe" }[] = [];
+    const w = world();
+    const env = { TMPDIR: "/runner/worker-p1-w1/tmp", XDG_CACHE_HOME: "/runner/worker-p1-w1/cache", PATH: "/usr/bin" };
+    await w.pool.acquire({ projectId: "p1", workerId: "w1", hopId: "h1", spawnKey: "k", cmd: ["claude"], cwd: "/proj", env, spawn: (_cmd, opts) => { seen.push(opts); return openChild() as unknown as Child; } });
+    expect(seen).toEqual([{ cwd: "/proj", env, stdin: "pipe" }]);
+  });
+});

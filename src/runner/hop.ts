@@ -354,6 +354,13 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
 
     const startSeq = await latestSeq(deps, project.id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // REQ-126 (SPEC-125 D6): the worker's own temp and cache folders, under the folder it may already read and write — in place of the inherited TMPDIR, so what a browser or a build tool leaves
+    // lands there and not in the project folder. Programs read these from their environment; a worker typing `$TMPDIR` in Bash is refused by the policy, so rule 8 names the real path instead.
+    const tmpDir = join(dir, "tmp");
+    const cacheDir = join(dir, "cache");
+    mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
+    mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+    const env = { ...childEnv(process.env), TMPDIR: tmpDir, XDG_CACHE_HOME: cacheDir };
     const mcpFile = join(dir, "mcp.json");
     writeFileSync(mcpFile, JSON.stringify(open ? buildMcpConfig(config.apiUrl, worker.id, null, hopFile) : buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
     // A chat hop also carries every requirement of the spec, in the same system-prompt file — not argv: n × 4000 Thai characters can pass the single-argument limit (SPEC-117 D2.2)
@@ -361,7 +368,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const skillsFile = systemText === "" ? null : writeSkillsFile(dir, systemText);
     // a card hop: the hand-off line and the other-cards line are read together (one round of reads, not two — the next tick must not find the hop still unspawned)
     const [recipients, others] = messageId !== null ? [[], []] : await Promise.all([recipientsOf(deps, project.id, worker.id), otherCardsOf(deps, project.id, card!.id)]);
-    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id, recipients, others });
+    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id, recipients, others, tmpDir });
     // EVERY hop gets its own settings file = the runner's base + the read fence (UP-3: reads only inside the roots and this hop's folder) + the read-only
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
     const settingsFile = join(dir, "settings.json");
@@ -377,7 +384,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     if (open) {
       // D1/D3: the worker's open process — reused, or started (again) first; this task's hop id goes into the file its MCP server reads
       ow = await pool!.acquire({
-        projectId: project.id, workerId: worker.id, hopId: hop.id, cmd: [config.claudeBin, ...args], cwd: roots[0]!, env: childEnv(process.env), spawn: deps.spawn,
+        projectId: project.id, workerId: worker.id, hopId: hop.id, cmd: [config.claudeBin, ...args], cwd: roots[0]!, env, spawn: deps.spawn,
         spawnKey: spawnKeyOf({ args, cwd: roots[0]!, settings: settingsText, skills: skills.text }),
       });
       writeFileSync(hopFile, hop.id, { mode: 0o600 });
@@ -385,7 +392,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
       stderr = ow.stderr;
     } else {
       // a chat hop runs in its own private hop folder, never in the project's repo
-      child = deps.spawn([config.claudeBin, ...args], { cwd: messageId !== null ? dir : roots[0]!, env: childEnv(process.env) });
+      child = deps.spawn([config.claudeBin, ...args], { cwd: messageId !== null ? dir : roots[0]!, env });
       stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
     }
     spawnedPid = child.pid;

@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildChatPrompt, buildPrompt, folderNames, loadSkills, requirementsBlock, SHIPPED_SKILLS, threadOf, writeSkillsFile } from "./prompt";
+import { buildChatPrompt, buildPrompt as buildPromptWith, folderNames, loadSkills, requirementsBlock, SHIPPED_SKILLS, threadOf, writeSkillsFile } from "./prompt";
+
+/** the worker's own temp folder, as hop.ts names it (`<worker folder>/tmp`) — every card prompt carries it (REQ-126); a test that does not care gets this one */
+const TMP = "/tmp/caw-runner-x/worker-p-1-w-1/tmp";
+const buildPrompt = (i: Omit<Parameters<typeof buildPromptWith>[0], "tmpDir"> & { tmpDir?: string }) => buildPromptWith({ tmpDir: TMP, ...i });
 
 const worker = { id: "w-1", name: "Blew", roles: ["BE"], skills: ["role-be"] };
 const card = { id: "c-1", number: 7, title: "ทำหน้าอนุมัติ", todo: "ทำตาม STEP-004" };
@@ -39,10 +43,17 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
     expect(p).not.toContain("Other cards hold their own work");
     expect(buildPrompt({ worker, card, projectId: "p-1", others: [] })).not.toContain("Other cards hold their own work");
   });
-  test("SPEC-119 D2.3: rule 7 is the last rule, exactly", () => {
+  test("SPEC-119 D2.3: rule 7, exactly — and since REQ-126 it is followed by rule 8 as the last rule", () => {
     const rule7 = "7. If you find work that no card holds, say so in a `comment` (what is missing and why) — do not build it yourself.";
     expect(p).toContain(rule7);
-    expect(p.split("\n").at(-1)).toBe(rule7);
+    const lines = p.split("\n");
+    expect(lines.at(-2)).toBe(rule7);
+  });
+  test("REQ-126 (SPEC-125 D6, Q1 → B): rule 8 names the worker's own temp folder, written out — not $TMPDIR (the bash policy refuses any `$`) — and is the last rule", () => {
+    const rule8 = `8. Temporary files, caches and browser profiles go in ${TMP} (never in the project folder) — write that path out, not $TMPDIR.`;
+    expect(p.split("\n").at(-1)).toBe(rule8);
+    // the path is the caller's: another folder, another sentence
+    expect(buildPrompt({ worker, card, projectId: "p-1", tmpDir: "/other/hop-123/tmp" }).split("\n").at(-1)).toBe("8. Temporary files, caches and browser profiles go in /other/hop-123/tmp (never in the project folder) — write that path out, not $TMPDIR.");
   });
   test("SPEC-116 D3.2: with recipients it names each by name and role right after rule 3; with none the line is absent", () => {
     const two = buildPrompt({ worker, card, projectId: "p-1", recipients: [{ name: "แบงค์", roles: ["BE"] }, { name: "ฝน", roles: ["FE", "QA"] }] });

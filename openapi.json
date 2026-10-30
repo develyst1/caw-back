@@ -1634,7 +1634,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -1931,7 +1931,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -2173,7 +2173,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -2390,7 +2390,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -2457,7 +2457,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -2576,7 +2576,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -2650,7 +2650,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -3100,7 +3100,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           },
           "502": {
             "content": {
@@ -3666,7 +3666,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -3828,7 +3828,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -3910,7 +3910,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -4184,7 +4184,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -4432,7 +4432,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -5078,7 +5078,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -5354,7 +5354,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           },
           "422": {
             "content": {
@@ -5522,7 +5522,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -5697,7 +5697,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -5789,7 +5789,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }
@@ -5848,7 +5848,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       },
@@ -5983,7 +5983,7 @@
                 }
               }
             },
-            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing"
+            "description": "version_not_confirmed · already_exists · name_taken · already_member · edge_exists · is_entry · has_open_cards · chain_broken · waiting_on_question · already_answered · hop_not_running · worker_in_chain · hop_running · no_code_map · wrong_role · review_note_missing · plan_already_accepted · temp_folder_in_work"
           }
         }
       }

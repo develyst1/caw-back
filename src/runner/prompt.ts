@@ -15,8 +15,9 @@ export type PromptRecipient = { name: string; roles: string[] };
 /** another open work card of the project (SPEC-119 D2.2): its number, title, who holds it and its status — so the worker leaves that work to it */
 export type PromptOtherCard = { number: number; title: string; assignee: string | null; status: string };
 
-export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string; recipients?: PromptRecipient[]; others?: PromptOtherCard[] }): string {
-  const { worker, card, projectId, recipients = [], others = [] } = input;
+/** `tmpDir` = the worker's own temp folder (`<worker or hop folder>/tmp`, REQ-126 SPEC-125 D6): rule 8 names the real path, because the bash policy refuses `$TMPDIR` (any `$`) */
+export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string; recipients?: PromptRecipient[]; others?: PromptOtherCard[]; tmpDir: string }): string {
+  const { worker, card, projectId, recipients = [], others = [], tmpDir } = input;
   return [
     `คุณคือ ${worker.name} (${worker.roles.join(" + ")}) ทีมงาน AI ใน CAW — your role skills are in your system prompt: follow them.`,
     `Your card is ${card.id} (#${card.number}) in project ${projectId}.`,
@@ -34,6 +35,7 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
     "5. If you cannot go on without a decision, use `ask_operator` with your proposed default — do not guess.",
     "6. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.",
     "7. If you find work that no card holds, say so in a `comment` (what is missing and why) — do not build it yourself.",
+    `8. Temporary files, caches and browser profiles go in ${tmpDir} (never in the project folder) — write that path out, not $TMPDIR.`,
   ].join("\n");
 }
 

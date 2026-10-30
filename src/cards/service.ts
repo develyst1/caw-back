@@ -13,6 +13,7 @@ import type { Db } from "../db/client";
 import { cards } from "../db/schema";
 import { requireOperator, workerIdOf } from "../http/actor";
 import { ApiError, notFound } from "../http/errors";
+import { tempFolderIn } from "./temp-folders";
 import { type Card, cardView, depsOf, isWorkable, type Note, noteView } from "./view";
 
 const need = <T>(x: T | null | undefined, what: string): T => x ?? (() => { throw notFound(what); })();
@@ -222,6 +223,11 @@ export async function setStatus(db: Db, actor: Actor, hopId: string | null, card
     // REQ-125 (SPEC-124 D3): a worker moves a card to review only with both parts; CAW writes them as one note on the card, in the same write
     if (status === "review" && actor.startsWith("worker:") && (done === "" || howToTry === "")) {
       throw new ApiError(409, "review_note_missing", "ยังส่งตรวจไม่ได้ — เขียนบันทึกก่อนว่าทำอะไรไปบ้าง และเจ้าของจะลองได้อย่างไร (ใส่ใน done และ howToTry)", { missing: [...(done === "" ? ["done"] : []), ...(howToTry === "" ? ["howToTry"] : [])] });
+    }
+    // REQ-126 (SPEC-125 D7): a worker sends a card to review or done only when no temp folder (a browser profile, a cache) sits in the work folder. CAW only looks — it never deletes. The operator is never refused.
+    if ((status === "review" || status === "done") && actor.startsWith("worker:")) {
+      const folder = tempFolderIn(s.project!.workspace.roots, s.project!.workspace.readOnly);
+      if (folder !== null) throw new ApiError(409, "temp_folder_in_work", `ยังส่งไม่ได้ — มีโฟลเดอร์ชั่วคราว ${folder} ในโฟลเดอร์งาน ให้ย้ายไปไว้ใน $TMPDIR หรือลบออกก่อน`, { folder });
     }
     const set: CawEvent = { type: "card.status_set", projectId: c.projectId, actor, at, data: { cardId, status } };
     if (status !== "review" || done === "" || howToTry === "") return set;

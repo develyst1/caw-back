@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chainOf3, newCard, setup } from "../../test/helpers/api";
+import { judgeBash } from "./bash-policy";
 import { RunnerApiError, createApi } from "./api";
 import { HOOKS } from "./config";
 import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, folderOutsideWorkspace, refusalOf, refusedNote, runHop } from "./hop";
@@ -609,6 +610,17 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     expect(stdins).toEqual([undefined]);
     expect(c.deps.pool.sessions()).toEqual([]);
   });
+  // REQ-126 (SPEC-125 D6): the one-shot chat hop gets its own TMPDIR / XDG_CACHE_HOME under its hop folder too (it is also a worker process); rule 8 is a card prompt's, not the chat prompt's
+  test("REQ-126: a CHAT hop's TMPDIR / XDG_CACHE_HOME are under its own hop folder (there before the spawn); the chat prompt has no rule 8", async () => {
+    const c = await chatWorld();
+    const seen: { env: Record<string, string | undefined>; existed: boolean }[] = [];
+    const real = c.deps.spawn;
+    c.deps.spawn = (cmd, opts) => { seen.push({ env: opts.env, existed: existsSync(opts.env.TMPDIR ?? "/nonexistent") }); return real(cmd, opts); };
+    await run(c, async () => { await c.reply(); });
+    const dir = join(c.tmpRoot, `hop-${c.chatHop.id}`);
+    expect([seen[0]!.env.TMPDIR, seen[0]!.env.XDG_CACHE_HOME, seen[0]!.existed]).toEqual([join(dir, "tmp"), join(dir, "cache"), true]);
+    expect(c.spawned[0]!.cmd[2]).not.toContain("Temporary files, caches and browser profiles");
+  });
   // REQ-118 (SPEC-117 D2.2, AC-2): the chat hop's system-prompt file carries every requirement of the spec. The hop's folder goes when the hop ends, so the file is read WHILE the stub child runs.
   const REQ = (n: number) => ({ key: `REQ-00${n}`, kind: "requirement", title: `ข้อกำหนด ${n}`, body: { text: `ระบบต้องทำข้อ ${n}\nบรรทัดสอง ${n}` }, origin: { date: "2026-10-30", stamp: "operator" } });
   // `noSkills`: the API never makes a worker without skills (min 1), so that case hands runHop a worker with `skills: []` directly
@@ -872,6 +884,74 @@ describe("an open worker: a card hop is a task on its worker's open process (REQ
     const r = await runHop(o.deps, await o.input());
     expect(r.hop.endedAt).toBeNull(); // left running in the store
     o.deps.stopping = undefined;
+  });
+});
+
+// REQ-126 (SPEC-125 D6, TASK-168, Q1 → B): every worker process gets its own TMPDIR and XDG_CACHE_HOME under the folder it may already read and write, in place of the inherited TMPDIR;
+// rule 8 names that real folder, because the bash policy refuses `$TMPDIR` (any `$`).
+describe("a worker's own temp folder (REQ-126)", () => {
+  const noProcs: Procs = { inspect: () => null, groupAlive: () => false, killGroup: () => {}, sleep: async () => {} };
+  const spawnedEnvs = (w: { deps: HopDeps }) => {
+    const seen: { env: Record<string, string | undefined>; tmpExistedAtSpawnTime: boolean }[] = [];
+    const real = w.deps.spawn;
+    w.deps.spawn = (cmd, opts) => { seen.push({ env: opts.env, tmpExistedAtSpawnTime: existsSync(opts.env.TMPDIR ?? "/nonexistent") && existsSync(opts.env.XDG_CACHE_HOME ?? "/nonexistent") }); return real(cmd, opts); };
+    return seen;
+  };
+
+  test("a one-shot card hop: TMPDIR and XDG_CACHE_HOME are <hop folder>/tmp and /cache (0700, there BEFORE the spawn), the inherited TMPDIR is replaced, rule 8 names the path", async () => {
+    const w = await world();
+    const seen = spawnedEnvs(w);
+    const inherited = process.env.TMPDIR;
+    process.env.TMPDIR = "/inherited/tmp";
+    try {
+      w.set(() => fakeChild({ lines: fixture("ok"), before: commentBy(w) }));
+      await runHop(w.deps, await w.input());
+    } finally { if (inherited === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = inherited; }
+    const dir = join(w.tmpRoot, `hop-${w.hop.id}`);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.env.TMPDIR).toBe(join(dir, "tmp")); // not "/inherited/tmp"
+    expect(seen[0]!.env.XDG_CACHE_HOME).toBe(join(dir, "cache"));
+    expect(seen[0]!.tmpExistedAtSpawnTime).toBe(true);
+    expect(w.spawned[0]!.cmd[2]).toContain(`8. Temporary files, caches and browser profiles go in ${join(dir, "tmp")} (never in the project folder) — write that path out, not $TMPDIR.`);
+    // the usual basics are still there (PATH, HOME …), only these two differ
+    expect(seen[0]!.env.PATH).toBe(process.env.PATH);
+  });
+
+  test("an open worker: its TMPDIR / XDG_CACHE_HOME are under ITS folder (0700, kept between tasks), and rule 8 in the task names the same path", async () => {
+    const w = await world();
+    const pool = new WorkerPool({ tmpRoot: w.tmpRoot, log: () => {}, procs: noProcs, killGraceMs: 10 });
+    w.deps.pool = pool;
+    const seen = spawnedEnvs(w);
+    const sent: string[] = [];
+    const real = w.deps.spawn;
+    w.deps.spawn = (cmd, opts) => {
+      const c = real(cmd, opts) as Child;
+      return Object.assign(c, { stdin: { write: (l: string) => { sent.push(l); }, end: () => {} } });
+    };
+    w.set(() => fakeChild({ lines: fixture("ok"), hang: true, before: commentBy(w) }));
+    // the fake never reads stdin: release it by hand once the task line is written
+    const run = runHop(w.deps, await w.input());
+    for (let i = 0; i < 50 && sent.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    await run.catch(() => {});
+    const dir = pool.dirOf(w.project.id, w.worker.id);
+    expect(seen[0]!.env.TMPDIR).toBe(join(dir, "tmp"));
+    expect(seen[0]!.env.XDG_CACHE_HOME).toBe(join(dir, "cache"));
+    expect(seen[0]!.tmpExistedAtSpawnTime).toBe(true);
+    expect(JSON.parse(sent[0]!).message.content).toContain(`go in ${join(dir, "tmp")} (never in the project folder)`);
+  }, 30000);
+
+  test("the proof the TASK asked for: the real path in rule 8 is writable for a worker's Bash (judgeBash → null); `$TMPDIR` is not (shell_feature) — which is why rule 8 writes the path out", () => {
+    const root = inWs("caw-hop-root-");
+    const dir = inWs("caw-hop-worker-");
+    mkdirSync(join(dir, "tmp"), { recursive: true });
+    const readable = [root, dir]; // the roots + the worker's own folder, as readableDirs gives them
+    expect(judgeBash(`touch ${join(dir, "tmp")}/x`, root, readable, [])).toBeNull();
+    expect(judgeBash(`mkdir -p ${join(dir, "tmp")}/profile`, root, readable, [])).toBeNull();
+    expect(judgeBash(`touch ${join(dir, "cache")}/x`, root, readable, [])).toBeNull();
+    expect(judgeBash('touch "$TMPDIR/x"', root, readable, [])).toEqual({ code: "shell_feature", detail: "$" });
+    expect(judgeBash('mkdir -p "$TMPDIR/profile"', root, readable, [])).toEqual({ code: "shell_feature", detail: "$" });
+    // and a folder that is NOT the worker's own stays refused
+    expect(judgeBash("touch /etc/caw-x", root, readable, [])).not.toBeNull();
   });
 });
 

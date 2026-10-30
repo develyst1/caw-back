@@ -132,6 +132,9 @@ export async function accept(db: Db, blueprint: Blueprint, actor: Actor, proposa
   const { state } = await writeDecided(db, projectId, (s) => {
     const p = s.proposals.find((x) => x.id === proposalId) ?? (() => { throw notFound("proposal"); })();
     if (p.status !== "open") throw new ApiError(409, "not_open", `that proposal is ${p.status}`);
+    // REQ-126 (SPEC-125 D4): the same plan twice (a copy of an accepted one) must not make its cards again. "Same items" = same length and, per index, the same trimmed title, anchor key and worker.
+    const same = (a: ProposalItem[], b: ProposalItem[]) => a.length === b.length && a.every((x, i) => x.title.trim() === b[i]!.title.trim() && x.anchor.key === b[i]!.anchor.key && x.workerId === b[i]!.workerId);
+    if (s.proposals.some((x) => x.id !== proposalId && x.status === "accepted" && same(x.items, p.items))) throw new ApiError(409, "plan_already_accepted", "แผนนี้ตกลงไปแล้ว");
     for (const [i, item] of p.items.entries()) {
       if (!s.members.includes(item.workerId)) throw new ApiError(400, "not_a_member", `items[${i}].workerId ${item.workerId} is no longer in this project's chain`);
     }
