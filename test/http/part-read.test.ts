@@ -9,7 +9,7 @@ import { BP_PROJECT } from "../helpers/fake-blueprint";
 
 const fix = (name: string) => JSON.parse(readFileSync(new URL(`../fixtures/blueprint/${name}.json`, import.meta.url), "utf8"));
 /** the v2 answer the fake gives for a recorded context: [version, confirmedAt] out; revision, savedAt, latestLabel in */
-const v2 = (name: string, spec: { revision: number; savedAt: string; label: { version: number; label: string } | null }) => {
+const v2 = (name: string, spec: { revision: number; savedAt: string; label: { version: number; label: string | null } | null }) => {
   const { version: _v, confirmedAt: _c, ...rest } = fix(name);
   return { ...rest, revision: spec.revision, savedAt: spec.savedAt, latestLabel: spec.label ? { ...spec.label, labelledAt: spec.savedAt, by: "โด่ง" } : null };
 };

@@ -245,3 +245,16 @@ test("the chat context's project carries `spec` too (the worker's view of the pr
   expect(ctx.status).toBe(200);
   expect(ctx.json.project.spec).toEqual({ revision: 1, reachable: true, lastPullAt: null });
 });
+
+// REQ-105 Q6 (TASK-138): the real blueprint-back sends `latestLabel.label: null` for a version confirmed before named labels — CAW passes it through as null, never as "null" text
+test("a label with NO name (label: null) is passed through: start 201, the project and the event hold { version: 3, label: null }", async () => {
+  const { call, db, fake } = await setup();
+  fake.mode.spec.label = { version: 3, label: null }; // synthetic: Blueprint's label from before named labels
+  const r = await create(call);
+  expect([r.status, r.json.latestLabel, r.json.latestSeenVersion, r.json.version]).toEqual([201, { version: 3, label: null }, 3, 3]);
+  const got = await call("GET", `/v1/projects/${r.json.id}`);
+  expect([got.status, got.json.latestLabel]).toEqual([200, { version: 3, label: null }]);
+  const [ev] = await db.select().from(events);
+  expect((ev!.data as any).latestLabel).toEqual({ version: 3, label: null });
+  expect((await call("POST", `/v1/projects/${r.json.id}/rebuild-check`)).json).toEqual({ same: true });
+});

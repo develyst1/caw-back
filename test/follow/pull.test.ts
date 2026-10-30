@@ -75,6 +75,19 @@ test("a new label alone (no card flagged) writes ONE spec.revised with the label
   expect((await w.call("POST", `/v1/projects/${w.project.id}/rebuild-check`)).json).toEqual({ same: true });
 });
 
+test("a label with NO name (label: null) in a pull: spec.revised carries { version, label: null } and the project follows it; rebuild-check stays clean (REQ-105 Q6)", async () => {
+  const w = await world();
+  w.edit(2, { added: ["STEP-099"] });
+  w.fake.mode.spec.label = { version: 2, label: null }; // synthetic: a version confirmed before named labels
+  await w.follow.pullAll();
+  expect(await w.revised()).toEqual([{ revision: 2, latestLabel: { version: 2, label: null }, cardIds: [] }]);
+  expect(await w.view()).toMatchObject({ latestLabel: { version: 2, label: null }, latestSeenVersion: 2 });
+  w.edit(3, { added: ["STEP-098"] });
+  await w.follow.pullAll();
+  expect(await w.revised()).toHaveLength(1); // the same nameless label again is not news
+  expect((await w.call("POST", `/v1/projects/${w.project.id}/rebuild-check`)).json).toEqual({ same: true });
+});
+
 test("`changed ∪ removed` both count; the newest set wins on a card; paging: `more: true` asks again from the last revision and ONE event comes out", async () => {
   const w = await world();
   const removedOne = await w.card("STEP-005");

@@ -40,7 +40,7 @@ export const projects = caw.table("projects", {
   hopsUsed: integer("hops_used").notNull().default(0),
   workspace: jsonb("workspace").$type<{ roots: string[]; readOnly?: string[] }>().notNull().default({ roots: [] }), // readOnly (v1.16) is optional here: a row from before it has none
   codeMap: jsonb("code_map").$type<CodeMapState>(), // v1.16: null until the entry worker saves one (migration 0009)
-  latestLabel: jsonb("latest_label").$type<{ version: number; label: string }>(), // REQ-105 (migration 0011): the latest label Blueprint showed; null = none. Replayed state
+  latestLabel: jsonb("latest_label").$type<{ version: number; label: string | null }>(), // REQ-105 (migration 0011): the latest label Blueprint showed; null = none. Replayed state
   entryWorkerId: uuid("entry_worker_id").references(() => workers.id),
   createdAt: at("created_at").notNull(),
 }, (t) => [

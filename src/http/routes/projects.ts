@@ -25,7 +25,7 @@ export const ProjectSchema = z.object({
   id: z.string(), name: z.string(), blueprintProjectId: z.string(),
   version: z.number().int().openapi({ description: "from REQ-105 on: the LABEL number when the project started (0 = no label then)" }),
   latestSeenVersion: z.number().int().openapi({ description: "the latest label number seen (0 = none)" }),
-  latestLabel: z.object({ version: z.number().int(), label: z.string() }).nullable().openapi({ description: "the latest label Blueprint showed: its number and words; null = none (REQ-105)" }),
+  latestLabel: z.object({ version: z.number().int(), label: z.string().nullable().openapi({ description: "its words, or null when Blueprint's label has none (a version from before named labels)" }) }).nullable().openapi({ description: "the latest label Blueprint showed: its number and words; null = none (REQ-105)" }),
   mode: z.enum(["manual", "dispatcher"]), hopBudget: z.number().int(), hopsUsed: z.number().int(),
   entryWorkerId: z.string().nullable(), workspace: z.object({ roots: z.array(z.string()), readOnly: z.array(z.string()).openapi({ description: "⊆ roots; workers read every root and write only the others (D-100)" }) }),
   codeMap: z.union([CodeMapSchema, z.null()]).openapi({ description: "null until the entry worker saves one (v1.16)" }), createdAt: z.string(),

@@ -13,7 +13,8 @@ export type VersionFeed = {
 };
 
 /** SPEC-106 § Seam contract v2: a label is a tag on a moment of the spec, not a gate */
-export type LatestLabel = { version: number; label: string; labelledAt?: string; by?: string };
+/** `label` is null for a version confirmed before named labels (blueprint-back `src/seam/spec.ts:16`) — REQ-105 Q6 */
+export type LatestLabel = { version: number; label: string | null; labelledAt?: string; by?: string };
 /** SPEC-106 route 1 — the current spec in one read; `revision` counts change sets (0 = none yet) */
 export type SpecSnapshot = { projectId: string; revision: number; savedAt: string | null; latestLabel: LatestLabel | null; parts: unknown[]; links: unknown[] };
 /** SPEC-106 route 4 — one entry per change set after `after`, ascending; `more` = ask again from the last `rev` */

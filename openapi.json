@@ -969,7 +969,11 @@
             "description": "the latest label Blueprint showed: its number and words; null = none (REQ-105)",
             "properties": {
               "label": {
-                "type": "string"
+                "description": "its words, or null when Blueprint's label has none (a version from before named labels)",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "version": {
                 "type": "integer"

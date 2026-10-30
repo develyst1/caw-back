@@ -58,7 +58,7 @@ export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_tw
 // (PATCH …/mode sets the mode and, optionally, the budget in ONE event: project.mode_set).
 export type CawEvent = Header & (
   // REQ-105 (SPEC-107 D2/D11): `version` is the LABEL number at start (0 = none); `latestLabel` and `revision` are optional — an event from before it has neither (→ null / 0)
-  | { type: "project.created"; data: { id: string; name: string; blueprintProjectId: string; version: number; latestLabel?: { version: number; label: string } | null; revision?: number } }
+  | { type: "project.created"; data: { id: string; name: string; blueprintProjectId: string; version: number; latestLabel?: { version: number; label: string | null } | null; revision?: number } }
   | { type: "worker.created"; data: WorkerData | LegacyWorkerData }
   | { type: "worker.combined"; data: (WorkerData | LegacyWorkerData) & { combinedFrom: [string, string] } }
   | { type: "worker.updated"; data: { id: string } & WorkerPatch }
@@ -81,7 +81,7 @@ export type CawEvent = Header & (
   // ONE event per Blueprint version the pull has seen: the cards it flags (possibly none) and the new latestSeenVersion
   | { type: "card.spec_changed"; data: { version: number; cardIds: string[] } }
   // REQ-105 (D6): `revision` = the newest change set the pull saw; the cards in `cardIds` get it as specChangedVersion; the project takes `latestLabel`. No spec text.
-  | { type: "spec.revised"; data: { revision: number; latestLabel: { version: number; label: string } | null; cardIds: string[] } }
+  | { type: "spec.revised"; data: { revision: number; latestLabel: { version: number; label: string | null } | null; cardIds: string[] } }
   // REQ-105 D12: `revision` = the change set that removed the part / brought it back
   | { type: "card.anchor_removed" | "card.anchor_restored"; data: { cardIds: string[]; revision: number } }
   | { type: "project.mode_set"; data: { mode: Mode; hopBudget: number | null } }

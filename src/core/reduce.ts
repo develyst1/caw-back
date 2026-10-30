@@ -8,7 +8,7 @@ export type CodeMapState = CodeMapInput & { updatedAt: string; updatedBy: string
 export type ProjectState = {
   id: string; name: string; blueprintProjectId: string; version: number; latestSeenVersion: number;
   /** REQ-105 (SPEC-107 D2): the latest label Blueprint showed us; `version`/`latestSeenVersion` are label NUMBERS now (0 = none). null = no label yet / an old project */
-  latestLabel: { version: number; label: string } | null;
+  latestLabel: { version: number; label: string | null } | null;
   mode: Mode; hopBudget: number; hopsUsed: number; workspace: { roots: string[]; readOnly: string[] /* v1.16: ⊆ roots; the rest are writable */ };
   entryWorkerId: string | null; codeMap: CodeMapState | null; createdAt: string;
 };

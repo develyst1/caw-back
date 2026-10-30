@@ -18,7 +18,7 @@ const recorded = (id: string) => (id === BP_PROJECT_2 ? BP_PROJECT : id); // the
 // Everything below the `spec` keys is built from the RECORDED v1 answers, reshaped to SPEC-106's v2 fields; each v2 answer is marked `// synthetic — SPEC-106 v2, until recorded`.
 // `spec.version` (1–3) = which recorded version's part TEXT is "the current spec" (the recorded versions differ in the parts' titles, so a test changes the text by moving it);
 // `spec.revision` = the spec revision; `spec.label` = the latest label or null (no label yet).
-export type FakeSpec = { revision: number; version: 1 | 2 | 3; label: { version: number; label: string } | null; savedAt: string };
+export type FakeSpec = { revision: number; version: 1 | 2 | 3; label: { version: number; label: string | null } | null; savedAt: string }; // synthetic: a null name = a version confirmed before named labels (the real blueprint-back sends it, REQ-105 Q6)
 export type FakeChange = { rev: number; at: string; by: string | null; cause: string; added: string[]; changed: string[]; removed: string[] };
 
 export function fakeBlueprint() {
