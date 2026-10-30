@@ -137,7 +137,7 @@ test("the API's rules apply unchanged: no hop → hop_required; someone else's h
   }
   const ann = await connect(w.app, w.a.id, w.hop.id);
   const broken = await ann.call("hand_off", { cardId: w.c1.id, toWorkerId: w.c.id, text: "ส่ง QA" }); // Ann → Cat has no edge
-  expect([broken.isError, broken.json.error.code, broken.json.error.details]).toEqual([true, "chain_broken", { from: w.a.id, allowed: [w.b.id] }]);
+  expect([broken.isError, broken.json.error.code, broken.json.error.details]).toEqual([true, "chain_broken", { from: w.a.id, allowed: [w.b.id], allowedWorkers: [{ id: w.b.id, name: w.b.name, roles: w.b.roles }] }]);
   // the card moves to Ben while Ann's hop still runs: her hop passes the hop check, the card is no longer hers
   await w.call("PATCH", `/v1/cards/${w.c1.id}/assignee`, { workerId: w.b.id });
   for (const [tool, args] of writes) {

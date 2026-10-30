@@ -71,8 +71,27 @@ describe("which cards are taken again within one run (a failed card must not be 
   test("the same card for a DIFFERENT worker (handed off) is a new turn", () => {
     expect(planTick(base({ workable: [card(1, { assigneeId: "w2" })], hopsInRun: [hop("c1", "handed_off")] }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w2" });
   });
-  test("when every workable card has had its turn this run → nothing_workable", () => {
-    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "commented")], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "finish_run", runId: "r1", reason: "nothing_workable" });
+  test("the only card, commented once → it gets a second turn (SPEC-116 D1)", () => {
+    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "commented")], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w1" });
+  });
+  test("commented twice and still workable → no_progress, naming the card", () => {
+    const hops = [hop("c1", "commented", { id: "a" }), hop("c1", "commented", { id: "b" })];
+    expect(planTick(base({ workable: [card(1)], hopsInRun: hops, openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "finish_run", runId: "r1", reason: "no_progress", cardId: "c1" });
+  });
+  test("failed once on the only card → no_progress (a failing card is not hopped again)", () => {
+    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "failed")], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "finish_run", runId: "r1", reason: "no_progress", cardId: "c1" });
+  });
+  test("c1 commented once and c2 untouched → c2 goes first, c1's second turn after", () => {
+    const hops = [hop("c1", "commented")];
+    expect(planTick(base({ hopsInRun: hops, openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "start_hop", cardId: "c2", workerId: "w1" });
+    expect(planTick(base({ hopsInRun: [...hops, hop("c2", "failed")], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w1" });
+  });
+  test("several stuck cards → the lowest-numbered is the one named", () => {
+    const hops = [hop("c2", "failed"), hop("c1", "failed")];
+    expect(planTick(base({ workable: [card(2), card(1)], hopsInRun: hops, openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "finish_run", runId: "r1", reason: "no_progress", cardId: "c1" });
+  });
+  test("a stuck card without an assignee is not named: nothing_workable", () => {
+    expect(planTick(base({ workable: [card(1, { assigneeId: null })], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "finish_run", runId: "r1", reason: "nothing_workable" });
   });
 });
 

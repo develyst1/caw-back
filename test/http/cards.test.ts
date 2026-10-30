@@ -147,7 +147,8 @@ test("AC-4 hand-off: along a chain edge → 200 (the card moves to the next work
   const HA = hopHeader(hopA.id);
 
   const broken = await call("POST", H, { toWorkerId: c.id, text: "ส่งต่อ QA" }, as(a), HA);
-  expect([broken.status, broken.json.error.code, broken.json.error.details]).toEqual([409, "chain_broken", { from: a.id, allowed: [b.id] }]);
+  expect([broken.status, broken.json.error.code, broken.json.error.details]).toEqual([409, "chain_broken", { from: a.id, allowed: [b.id], allowedWorkers: [{ id: b.id, name: "Ben", roles: ["FE"] }] }]);
+  expect(broken.json.error.message).toEndWith(`— you may hand to: Ben (FE) ${b.id}`); // SPEC-116 D3.3
   const notYours = await call("POST", H, { toWorkerId: c.id, text: "x" }, as(b), HA); // Ben has no hop of his own: v1.5 stops him first
   expect([notYours.status, notYours.json.error.code]).toEqual([409, "hop_not_running"]);
   expect((await call("POST", H, { toWorkerId: b.id, text: "" }, as(a), HA)).status).toBe(400);
@@ -163,7 +164,40 @@ test("AC-4 hand-off: along a chain edge → 200 (the card moves to the next work
   await call("PATCH", `/v1/hops/${hopA.id}`, { outcome: "handed_off" });
   const hopB = await openHop(call, project.id, card.id, b.id);
   const none = await call("POST", H, { toWorkerId: a.id, text: "x" }, as(b), hopHeader(hopB.id));
-  expect([none.status, none.json.error.details]).toEqual([409, { from: b.id, allowed: [] }]);
+  expect([none.status, none.json.error.details]).toEqual([409, { from: b.id, allowed: [], allowedWorkers: [] }]);
+  expect(none.json.error.message).toEndWith("— you may hand to: nobody");
+});
+
+// The "a name matching two recipients is refused" half of D3.4 cannot be reached through the API: live worker names are unique (index workers_name_live, v1.14).
+test("SPEC-116 D3.4 hand-off by NAME: the name of one recipient (trimmed) → 200 and the stored toWorkerId is its id; an unknown name, or a name that is not a recipient's → 409 listing who is", async () => {
+  const { call } = await setup();
+  const { project, a, b, c } = await chainOf3(call);
+  await call("POST", `/v1/projects/${project.id}/chain/edges`, { from: a.id, to: c.id });
+  await call("POST", `/v1/projects/${project.id}/chain/edges`, { from: a.id, to: b.id });
+  const card = (await newCard(call, project.id, { assigneeId: a.id })).json;
+  const H = `/v1/cards/${card.id}/handoff`;
+  const hop = await openHop(call, project.id, card.id, a.id);
+  const unknown = await call("POST", H, { toWorkerId: "Zed", text: "x" }, as(a), hopHeader(hop.id));
+  expect([unknown.status, unknown.json.error.code]).toEqual([409, "chain_broken"]);
+  expect(unknown.json.error.details.allowedWorkers).toEqual([b, c].map((w) => ({ id: w.id, name: w.name, roles: w.roles })).sort((x, y) => (x.id < y.id ? -1 : 1)));
+  const notARecipient = await call("POST", H, { toWorkerId: "Ann", text: "x" }, as(a), hopHeader(hop.id)); // a real worker, but not one Ann may hand to
+  expect([notARecipient.status, notARecipient.json.error.code]).toEqual([409, "chain_broken"]);
+  const ok = await call("POST", H, { toWorkerId: "  Cat ", text: "ทำต่อ" }, as(a), hopHeader(hop.id));
+  expect([ok.status, ok.json.assigneeId]).toEqual([200, c.id]);
+  const note = (await call("GET", `/v1/cards/${card.id}/context`)).json.notes.at(-1);
+  expect([note.type, note.toWorkerId]).toEqual(["handoff", c.id]); // the id, never the name
+});
+
+test("SPEC-116 D3.1 card_context.handOffTo: [{ id, name, roles }] for a card whose worker has one edge, [] when it has none", async () => {
+  const { call } = await setup();
+  const { project, a, b } = await chainOf3(call);
+  await call("POST", `/v1/projects/${project.id}/chain/edges`, { from: a.id, to: b.id });
+  const mine = (await newCard(call, project.id, { assigneeId: a.id })).json;
+  const dead = (await newCard(call, project.id, { assigneeId: b.id })).json; // Ben has no edge out
+  const free = (await newCard(call, project.id)).json; // no assignee
+  expect((await call("GET", `/v1/cards/${mine.id}/context`)).json.handOffTo).toEqual([{ id: b.id, name: "Ben", roles: ["FE"] }]);
+  expect((await call("GET", `/v1/cards/${dead.id}/context`)).json.handOffTo).toEqual([]);
+  expect((await call("GET", `/v1/cards/${free.id}/context`)).json.handOffTo).toEqual([]);
 });
 
 test("status: the assigned worker from its running hop or the operator; `doing` while a dependency is open → 409 waiting_on_question; bad value → 400", async () => {

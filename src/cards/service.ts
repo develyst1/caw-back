@@ -87,7 +87,7 @@ export async function getCard(db: Db, cardId: string): Promise<Card> {
 
 /** REQ-105: where `spec` came from — the spec revision, when CAW read it, whether Blueprint was unreachable and the last body read was served, and whether it is the text the hop was pinned with */
 export type SpecRead = { revision: number; readAt: string; fromCache: boolean; pinned: boolean };
-export type CardContext = { card: Card; spec: unknown; specRead: SpecRead; notes: Note[]; decisions: { cardId: string; number: number; question: string; answer: string }[]; codeMap: CodeMapState | null };
+export type CardContext = { card: Card; spec: unknown; specRead: SpecRead; notes: Note[]; decisions: { cardId: string; number: number; question: string; answer: string }[]; handOffTo: Recipient[]; codeMap: CodeMapState | null };
 
 // spec = Blueprint's v2 part context exactly as returned (no reshaping). notes oldest first. decisions = the answered question
 // cards this card depends on directly (SPEC A-1, Interpreted).
@@ -110,6 +110,7 @@ export async function cardContext(db: Db, blueprint: Blueprint, cardId: string, 
     notes: state.notes.filter((n) => n.cardId === cardId).sort((a, b) => (a.id < b.id ? -1 : 1)).map(noteView),
     decisions: depsOf(state, cardId).filter((d) => d.kind === "question" && d.answer !== null)
       .map((d) => ({ cardId: d.id, number: d.number, question: d.question!.text, answer: d.answer! })),
+    handOffTo: recipientsOf(state, card.assigneeId), // SPEC-116 D3.1: whom this card's worker may hand it to, by name and role
     codeMap: state.project!.codeMap, // v1.16: every card hop knows the folders
   };
 }
@@ -133,7 +134,13 @@ export async function addComment(db: Db, actor: Actor, hopId: string | null, car
   return noteView(state.notes.find((n) => n.id === noteId)!);
 }
 
-// A hand-off follows an edge of the project's chain: from the card's current assignee to a worker it may hand to.
+/** SPEC-116 D3: the workers a worker may hand a card to — its edges' targets, not deleted, by id — with the name and roles a person knows them by */
+export type Recipient = { id: string; name: string; roles: string[] };
+const recipientsOf = (s: State, workerId: string | null): Recipient[] => workerId === null ? [] : s.edges.filter((e) => e.from === workerId)
+  .flatMap((e) => s.workers.filter((w) => w.id === e.to && w.deletedAt === null).map((w) => ({ id: w.id, name: w.name, roles: w.roles })))
+  .sort((a, b) => (a.id < b.id ? -1 : 1));
+
+// A hand-off follows an edge of the project's chain: from the card's current assignee to a worker it may hand to — named by id or by name (SPEC-116 D3.4).
 export async function handOff(db: Db, actor: Actor, hopId: string | null, cardId: string, toWorkerId: string, text: string): Promise<Card> {
   const { projectId } = await findCard(db, cardId);
   const noteId = newId();
@@ -141,9 +148,16 @@ export async function handOff(db: Db, actor: Actor, hopId: string | null, cardId
     const { state, card } = await onCard(db, cardId, (s, c) => {
       guardHop(s, actor, hopId, c); // before the refusal record: a hand-off from a hop that is not running is not recorded
       mayAct(actor, c);
-      const allowed = s.edges.filter((e) => e.from === c.assigneeId).map((e) => e.to);
-      if (!allowed.includes(toWorkerId)) throw new ApiError(409, "chain_broken", "the chain has no hand-off from the card's worker to that worker", { from: c.assigneeId, allowed });
-      return { type: "card.handed_off", projectId: c.projectId, actor, at: now(), data: { cardId, fromWorkerId: c.assigneeId, toWorkerId, noteId, text } };
+      const recipients = recipientsOf(s, c.assigneeId);
+      // an allowed id as it is; else a name that is exactly one recipient's; else refused, naming everyone allowed
+      const named = recipients.filter((r) => r.name === toWorkerId.trim());
+      const to = recipients.find((r) => r.id === toWorkerId)?.id ?? (named.length === 1 ? named[0]!.id : null);
+      if (to === null) {
+        const list = recipients.map((r) => `${r.name} (${r.roles.join(" + ")}) ${r.id}`).join(", ") || "nobody";
+        throw new ApiError(409, "chain_broken", `the chain has no hand-off from the card's worker to that worker — you may hand to: ${list}`,
+          { from: c.assigneeId, allowed: recipients.map((r) => r.id), allowedWorkers: recipients });
+      }
+      return { type: "card.handed_off", projectId: c.projectId, actor, at: now(), data: { cardId, fromWorkerId: c.assigneeId, toWorkerId: to, noteId, text } };
     });
     return cardView(state, card);
   } catch (e) {

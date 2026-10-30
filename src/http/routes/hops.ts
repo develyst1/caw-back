@@ -11,7 +11,7 @@ const json = <T extends z.ZodType>(schema: T, description: string) => ({ descrip
 const body = <T extends z.ZodType>(schema: T, description: string) => ({ ...json(schema, description), required: true as const });
 const ProjectId = z.object({ id: z.string() });
 const Outcome = z.enum(["commented", "handed_off", "status", "asked", "failed", "stopped", "interrupted", "replied", "proposed", "amended", "proposed_and_amended"]);
-const StopReason = z.enum(["budget_spent", "nothing_workable", "failed_review_twice", "limit_reached", "operator_stopped", "error"]);
+const StopReason = z.enum(["budget_spent", "nothing_workable", "failed_review_twice", "limit_reached", "operator_stopped", "error", "no_progress"]);
 
 const HopSchema = z.object({
   id: z.string(), projectId: z.string(), runId: z.string().nullable(), claimedBy: z.string().nullable(), cardId: z.string().nullable(), messageId: z.string().nullable(),

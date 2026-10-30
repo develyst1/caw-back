@@ -24,6 +24,16 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
     expect(p).toContain("2. Follow every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context");
     expect(p.indexOf("relatedDecisions")).toBeGreaterThan(p.indexOf("1. Call the MCP tool `card_context`"));
   });
+  test("SPEC-116 D3.2: with recipients it names each by name and role right after rule 3; with none the line is absent", () => {
+    const two = buildPrompt({ worker, card, projectId: "p-1", recipients: [{ name: "แบงค์", roles: ["BE"] }, { name: "ฝน", roles: ["FE", "QA"] }] });
+    const line = "You may hand off to: แบงค์ (BE), ฝน (FE + QA) — pass the name (or the id) as `toWorkerId` of `hand_off`.";
+    expect(two).toContain(line);
+    const lines = two.split("\n");
+    expect(lines[lines.indexOf(line) - 1]).toStartWith("3. End this step with exactly one");
+    expect(lines[lines.indexOf(line) + 1]).toStartWith("4. No git");
+    expect(p).not.toContain("You may hand off to");
+    expect(buildPrompt({ worker, card, projectId: "p-1", recipients: [] })).not.toContain("You may hand off to");
+  });
   test("forbids git writes and web", () => {
     expect(p).toMatch(/no git/i);
     expect(p).toMatch(/no web/i);

@@ -85,7 +85,7 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
   server.registerTool("hand_off", {
     title: "Hand a card to the next worker",
     description: "Pass a card assigned to you to another worker. Only along the project's chain: an edge from you to them must exist, or the call fails with chain_broken and lists who you may hand to.",
-    inputSchema: { cardId: z.string().min(1), toWorkerId: z.string().min(1), text: z.string().min(1).describe("what you did and what they should do next") },
+    inputSchema: { cardId: z.string().min(1), toWorkerId: z.string().min(1).describe("the worker's id or name (see `handOffTo` in your card context)"), text: z.string().min(1).describe("what you did and what they should do next") },
   }, ({ cardId, toWorkerId, text }) => run("POST", `/v1/cards/${id(cardId)}/handoff`, { toWorkerId, text }));
 
   server.registerTool("set_status", {

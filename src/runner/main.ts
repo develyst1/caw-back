@@ -31,6 +31,7 @@ const stopWords = (reason: StopReason, resetsAt: number | null, now: Date): stri
   limit_reached: NOTES.limit(resetsAt, now),
   operator_stopped: "คุณสั่งหยุด",
   error: "หยุดเพราะเกิดข้อผิดพลาด",
+  no_progress: "มีงานที่ยังทำต่อได้ แต่ไม่คืบ",
 })[reason];
 
 export function createRunner(deps: HopDeps & { instance: string }) {
@@ -223,7 +224,20 @@ export function createRunner(deps: HopDeps & { instance: string }) {
     if (action.kind !== "open_run") noRunSeen.delete(project.id);
     switch (action.kind) {
       case "idle": return;
-      case "finish_run": return await endRun(project.id, action.runId, action.reason);
+      case "finish_run": {
+        if (action.reason === "no_progress" && action.cardId) {
+          // name the card and how many turns it had (SPEC-116 D2); a card that cannot be read must not keep the run open
+          const card = await api.card(action.cardId).catch((e) => {
+            log(`run ${action.runId}: the card ${action.cardId} could not be read for the no_progress words (${messageOf(e)}) — ending it with the generic words`);
+            return null;
+          });
+          if (card) {
+            const n = hops.filter((h) => h.runId === action.runId && h.cardId === card.id && h.outcome !== null && h.outcome !== "interrupted").length;
+            return await endRun(project.id, action.runId, "no_progress", `#${card.number} ${card.title} ยังทำต่อได้ แต่ทำ ${n} รอบแล้วไม่คืบ — กด "อัตโนมัติ" เพื่อลองต่อ หรือเปิดการ์ดดู`);
+          }
+        }
+        return await endRun(project.id, action.runId, action.reason);
+      }
       case "open_run": {
         // Grace: the screen opens the run itself right after the mode switch (SPEC-C-003 § 6). One quiet tick lets it; then the fallback opens one.
         if (!noRunSeen.has(project.id)) { noRunSeen.add(project.id); return; }

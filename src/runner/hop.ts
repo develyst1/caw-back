@@ -225,6 +225,18 @@ const OUTCOME: Record<string, HopOutcome> = {
 };
 const cardOf = (e: ApiEvent): string | undefined => (e.type === "card.question_opened" ? e.data?.askingCardId : e.data?.cardId);
 
+/** Whom `workerId` may hand a card to, by name and role, in id order (SPEC-116 D3.2). The line is an aid, not a gate: a chain that cannot be read is logged
+ *  and the hop goes on without it — the refusal still names the recipients. */
+async function recipientsOf(deps: HopDeps, projectId: string, workerId: string): Promise<{ name: string; roles: string[] }[]> {
+  try {
+    const { members, edges } = await deps.api.chain(projectId);
+    return edges.filter((e) => e.from === workerId).flatMap((e) => members.filter((m) => m.id === e.to)).sort((a, b) => (a.id < b.id ? -1 : 1)).map((m) => ({ name: m.name, roles: m.roles }));
+  } catch (e) {
+    deps.log(`project ${projectId}: the chain could not be read for the hand-off line (${e instanceof Error ? e.message : String(e)}) — the hop goes on without it`);
+    return [];
+  }
+}
+
 export async function eventsAfter(api: Api, projectId: string, after: number): Promise<ApiEvent[]> {
   const all: ApiEvent[] = [];
   for (;;) {
@@ -323,7 +335,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const mcpFile = join(dir, "mcp.json");
     writeFileSync(mcpFile, JSON.stringify(buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
     const skillsFile = skills.text === "" ? null : writeSkillsFile(dir, skills.text);
-    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id });
+    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id, recipients: await recipientsOf(deps, project.id, worker.id) });
     // EVERY hop gets its own settings file = the runner's base + the read fence (UP-3: reads only inside the roots and this hop's folder) + the read-only
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
     const settingsFile = join(dir, "settings.json");

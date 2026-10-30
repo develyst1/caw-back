@@ -121,7 +121,7 @@ export const runs = caw.table("runs", {
   uniqueIndex("runs_one_open_per_project").on(t.projectId).where(sql`${t.endedAt} is null`),
   check("runs_mode", sql`${t.mode} in ('manual','dispatcher')`),
   check("runs_hop_budget", sql`${t.hopBudget} >= 0`),
-  check("runs_stop_reason", sql`${t.stopReason} is null or ${t.stopReason} in ('budget_spent','nothing_workable','failed_review_twice','limit_reached','operator_stopped','error')`),
+  check("runs_stop_reason", sql`${t.stopReason} is null or ${t.stopReason} in ('budget_spent','nothing_workable','failed_review_twice','limit_reached','operator_stopped','error','no_progress')`),
   check("runs_report_length", sql`${t.report} is null or char_length(${t.report}) <= 20000`),
 ]);
 

@@ -234,6 +234,32 @@
             },
             "type": "array"
           },
+          "handOffTo": {
+            "description": "who the card's worker may hand it to, by name and role",
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "roles": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "roles"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "notes": {
             "items": {
               "$ref": "#/components/schemas/Note"
@@ -277,6 +303,7 @@
           "specRead",
           "notes",
           "decisions",
+          "handOffTo",
           "codeMap"
         ],
         "type": "object"
@@ -1255,6 +1282,7 @@
               "limit_reached",
               "operator_stopped",
               "error",
+              "no_progress",
               null
             ],
             "type": [
@@ -1764,6 +1792,7 @@
                     "type": "string"
                   },
                   "toWorkerId": {
+                    "description": "the worker's id or name (see `handOffTo` in your card context)",
                     "minLength": 1,
                     "type": "string"
                   }
@@ -5300,7 +5329,8 @@
                       "failed_review_twice",
                       "limit_reached",
                       "operator_stopped",
-                      "error"
+                      "error",
+                      "no_progress"
                     ],
                     "type": "string"
                   }

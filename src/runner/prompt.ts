@@ -9,8 +9,11 @@ import type { ChatMessage } from "./api";
 export type PromptWorker = { id: string; name: string; roles: string[]; skills: string[] };
 export type PromptCard = { id: string; number: number; title: string; todo: string };
 
-export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string }): string {
-  const { worker, card, projectId } = input;
+/** a worker this one may hand a card to (SPEC-116 D3.2) */
+export type PromptRecipient = { name: string; roles: string[] };
+
+export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string; recipients?: PromptRecipient[] }): string {
+  const { worker, card, projectId, recipients = [] } = input;
   return [
     `คุณคือ ${worker.name} (${worker.roles.join(" + ")}) ทีมงาน AI ใน CAW — your role skills are in your system prompt: follow them.`,
     `Your card is ${card.id} (#${card.number}) in project ${projectId}.`,
@@ -19,6 +22,8 @@ export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; pro
     // REQ-112 (SPEC-109 D1): a rule on a related part binds the card too — Blueprint puts those in `spec.relatedDecisions`
     "2. Follow every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — a rule on a related part applies to your card too.",
     "3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
+    // SPEC-116 D3.2: the only other place a worker learns whom it may hand to is the refusal — say it up front, by name and role
+    ...(recipients.length === 0 ? [] : [`You may hand off to: ${recipients.map((r) => `${r.name} (${r.roles.join(" + ")})`).join(", ")} — pass the name (or the id) as \`toWorkerId\` of \`hand_off\`.`]),
     "4. No git writes (no add, commit, push, branch, checkout). No web. Stay inside your working folders.",
     "5. If you cannot go on without a decision, use `ask_operator` with your proposed default — do not guess.",
     "6. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.",

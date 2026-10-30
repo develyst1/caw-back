@@ -38,6 +38,7 @@ const CardContextSchema = z.object({
   }).openapi({ description: "where `spec` came from (REQ-105)" }),
   notes: z.array(NoteSchema),
   decisions: z.array(z.object({ cardId: z.string(), number: z.number().int(), question: z.string(), answer: z.string() })),
+  handOffTo: z.array(z.object({ id: z.string(), name: z.string(), roles: z.array(z.string()) })).openapi({ description: "who the card's worker may hand it to, by name and role" }),
   codeMap: z.union([CodeMapSchema, z.null()]).openapi({ description: "the project's code map (v1.16) — null until the entry worker saves one; every card hop knows the folders" }),
 }).openapi("CardContext");
 
@@ -85,7 +86,7 @@ export function cardRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) 
 
   app.openapi(createRoute({
     method: "post", path: "/v1/cards/{cardId}/handoff",
-    request: { params: CardId, body: body(z.object({ toWorkerId: z.string().min(1), text: Text }), "hand the card to the next worker along the chain") },
+    request: { params: CardId, body: body(z.object({ toWorkerId: z.string().min(1).openapi({ description: "the worker's id or name (see `handOffTo` in your card context)" }), text: Text }), "hand the card to the next worker along the chain") },
     responses: { 200: card("the card, now the next worker's"), 400: errors[400], 403: errors[403], 404: errors[404], 409: errors[409] },
   }), async (c) => {
     const b = c.req.valid("json");

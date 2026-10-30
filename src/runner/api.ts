@@ -20,7 +20,7 @@ export type Card = {
   /** the ids of the cards this one waits for (REQ-117: the report counts who waits on a review) — the API already sends it */
   dependsOn: string[];
 };
-export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_twice" | "limit_reached" | "operator_stopped" | "error";
+export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_twice" | "limit_reached" | "operator_stopped" | "error" | "no_progress";
 export type Run = {
   id: string; projectId: string; mode: "manual" | "dispatcher"; hopBudget: number; startedAt: string; endedAt: string | null;
   stopReason: StopReason | null; report: string | null; hopsUsed: number;
@@ -71,6 +71,8 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
     projects: async () => (await call<{ projects: Project[] }>("GET", "/v1/projects", null)).projects,
     workers: async () => (await call<{ workers: Worker[] }>("GET", "/v1/workers", null)).workers,
     card: (id: string) => call<Card>("GET", `/v1/cards/${enc(id)}`, null),
+    /** the project's chain: its members (with name and roles) and who may hand to whom (SPEC-116 D3.2) */
+    chain: (projectId: string) => call<{ members: Worker[]; edges: { from: string; to: string }[] }>("GET", `/v1/projects/${enc(projectId)}/chain`, null),
     /** newest first */
     hops: async (projectId: string, limit = 50) => (await call<{ hops: Hop[] }>("GET", `/v1/projects/${enc(projectId)}/hops?limit=${limit}`, null)).hops,
     events: async (projectId: string, after: number, limit = 500) =>

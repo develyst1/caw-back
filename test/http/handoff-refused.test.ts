@@ -19,7 +19,7 @@ test("an off-chain hand-off: the same 409 as before AND a handoff_refused note w
   const w = await world();
   const before = (await w.call("GET", `/v1/cards/${w.card.id}`)).json;
   const r = await w.call("POST", `/v1/cards/${w.card.id}/handoff`, { toWorkerId: w.c.id, text: "ส่ง QA เลย" }, w.as, w.H);
-  expect([r.status, r.json.error.code, r.json.error.details]).toEqual([409, "chain_broken", { from: w.a.id, allowed: [w.b.id] }]);
+  expect([r.status, r.json.error.code, r.json.error.details]).toEqual([409, "chain_broken", { from: w.a.id, allowed: [w.b.id], allowedWorkers: [{ id: w.b.id, name: w.b.name, roles: w.b.roles }] }]);
   expect(Object.keys(r.json)).toEqual(["error"]);
   expect(Object.keys(r.json.error).sort()).toEqual(["code", "details", "message"]);
 

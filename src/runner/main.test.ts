@@ -320,6 +320,30 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     expect(hops.map((h) => [a.cards.findIndex((c) => c.id === h.cardId) + 1, h.outcome])).toEqual([[1, "failed"], [2, "commented"], [3, "commented"]]);
   });
 
+  test("SPEC-116: a card whose hops only comment (status unchanged) gets 2 turns, then the run ends no_progress and the report names the card — not `ไม่มีงานที่ทำต่อได้`", async () => {
+    const a = await auto(1, 10);
+    a.how[a.cards[0]!.id] = async (id) => { await a.call("POST", `/v1/cards/${id}/comments`, { text: "thinking" }, a.actor); };
+    await a.drive(a.runner());
+    const hops = await a.hopsOldestFirst();
+    expect(hops.map((h) => h.outcome)).toEqual(["commented", "commented"]);
+    const [run] = await a.runs();
+    expect(run!.stopReason).toBe("no_progress");
+    expect(run!.report).toContain(`- เหตุที่จบรอบ: #1 ${a.cards[0]!.title} ยังทำต่อได้ แต่ทำ 2 รอบแล้วไม่คืบ — กด "อัตโนมัติ" เพื่อลองต่อ หรือเปิดการ์ดดู`);
+    expect(run!.report).not.toContain("ไม่มีงานที่ทำต่อได้");
+  });
+
+  test("SPEC-116: no_progress with a card that cannot be read still closes the run, with the generic words", async () => {
+    const a = await auto(1, 10);
+    a.how[a.cards[0]!.id] = async () => {};                                  // failed once → its turns are used up, it is still workable
+    const deps = a.mkDeps();
+    deps.api = { ...deps.api, card: async (id: string) => { throw new RunnerApiError(500, "boom", "x"); } } as typeof deps.api;
+    const r = createRunner({ ...deps, instance: "inst-A" });
+    await a.drive(r);
+    const [run] = await a.runs();
+    expect([run!.stopReason]).toEqual(["no_progress"]);
+    expect(run!.report).toContain("- เหตุที่จบรอบ: มีงานที่ยังทำต่อได้ แต่ไม่คืบ");
+  });
+
   test("a card with no assignee is left alone", async () => {
     const a = await auto(2, 10);
     const loose = (await newCard(a.call, a.project.id, { title: "nobody's" })).json;
@@ -431,7 +455,7 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     expect(part("รอคุณ", "ปัญหา")).toEqual([`- #${cards.find((c) => c.kind === "question")!.number} ใช้สีไหน?`]); // the waiting question
     expect(part("ปัญหา", "ค่าใช้จ่าย")).toEqual([
       `- ก้าว 3 (#${C.number}) ${hops[2]!.note}`, // the stored note already starts with หยุดไว้                                                      // the problem hop, with its stored note
-      "- เหตุที่จบรอบ: ไม่มีงานที่ทำต่อได้",
+      `- เหตุที่จบรอบ: #${C.number} ${C.title} ยังทำต่อได้ แต่ทำ 1 รอบแล้วไม่คืบ — กด "อัตโนมัติ" เพื่อลองต่อ หรือเปิดการ์ดดู`, // SPEC-116 D2: C was stopped once and is still workable
     ]);
     const sum = (k: "tokensIn" | "tokensOut") => hops.reduce((s, h) => s + (h[k] ?? 0), 0).toLocaleString("en-US");
     const cost = lines.slice(lines.indexOf("ค่าใช้จ่าย") + 1);

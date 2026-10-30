@@ -1,0 +1,2 @@
+ALTER TABLE "caw"."runs" DROP CONSTRAINT "runs_stop_reason";--> statement-breakpoint
+ALTER TABLE "caw"."runs" ADD CONSTRAINT "runs_stop_reason" CHECK ("caw"."runs"."stop_reason" is null or "caw"."runs"."stop_reason" in ('budget_spent','nothing_workable','failed_review_twice','limit_reached','operator_stopped','error','no_progress'));

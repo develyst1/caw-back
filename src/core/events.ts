@@ -49,7 +49,7 @@ export type HopOutcome = "commented" | "handed_off" | "status" | "asked" | "fail
 export type ChatQuestion = { text: string; proposedDefault: string; cases: string[] };
 /** One card a proposal would create: CAW's own words + an anchor { key, version } — no spec text. `dependsOn` = indexes into the proposal's items. */
 export type ProposalItem = { title: string; todo: string; anchor: { key: string; version: number }; workerId: string; dependsOn: number[]; hops: number };
-export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_twice" | "limit_reached" | "operator_stopped" | "error";
+export type StopReason = "budget_spent" | "nothing_workable" | "failed_review_twice" | "limit_reached" | "operator_stopped" | "error" | "no_progress";
 
 // A member of this union arrives with the TASK that writes it (A-071: the project · A-072: workers, chain, cards ·
 // A-073: mode, workspace, spec changes, runs, hops) — a reducer branch with no writer and no test would be unverified code.
