@@ -19,10 +19,27 @@ describe("buildPrompt (SPEC-C-003 § 2)", () => {
     for (const t of ["comment", "hand_off", "set_status", "ask_operator"]) expect(p).toContain(t);
     expect(p).toMatch(/exactly one/i);
   });
-  test("tells the worker to follow every requirement in spec.requirements and every rule in spec.decisions and spec.relatedDecisions, right after card_context (REQ-112 D1, REQ-118 SPEC-117 D1)", () => {
+  test("rule 2 (REQ-121 SPEC-119 D2.1): only this card's work; requirements and rules bind how — right after card_context", () => {
     expect(p).toContain("relatedDecisions");
-    expect(p).toContain("2. Follow every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — the requirements bind every card, whatever its anchor; a rule on a related part applies to your card too.");
+    expect(p).toContain("2. Do only your card's work — its title and its `todo`. Every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` binds how you do it (a rule on a related part applies to your card too); they are not a list of work for this card.");
     expect(p.indexOf("relatedDecisions")).toBeGreaterThan(p.indexOf("1. Call the MCP tool `card_context`"));
+  });
+  test("SPEC-119 D2.2: with other cards the line follows rule 2 exactly (holder, `ยังไม่มีคนรับ` for none, status) and comes before rule 3", () => {
+    const others = [{ number: 2, title: "ทำหน้าล็อกอิน", assignee: "ฝน FE", status: "todo" }, { number: 3, title: "ทำรายงาน", assignee: null, status: "doing" }];
+    const withOthers = buildPrompt({ worker, card, projectId: "p-1", others });
+    const line = "Other cards hold their own work — leave it to them, even if you could do it now: #2 ทำหน้าล็อกอิน (ฝน FE, todo); #3 ทำรายงาน (ยังไม่มีคนรับ, doing).";
+    const lines = withOthers.split("\n");
+    expect(lines[lines.indexOf(line) - 1]).toStartWith("2. Do only your card's work");
+    expect(lines[lines.indexOf(line) + 1]).toStartWith("3. End this step with exactly one");
+  });
+  test("SPEC-119 D2.2: no other cards (empty or omitted) → no line", () => {
+    expect(p).not.toContain("Other cards hold their own work");
+    expect(buildPrompt({ worker, card, projectId: "p-1", others: [] })).not.toContain("Other cards hold their own work");
+  });
+  test("SPEC-119 D2.3: rule 7 is the last rule, exactly", () => {
+    const rule7 = "7. If you find work that no card holds, say so in a `comment` (what is missing and why) — do not build it yourself.";
+    expect(p).toContain(rule7);
+    expect(p.split("\n").at(-1)).toBe(rule7);
   });
   test("SPEC-116 D3.2: with recipients it names each by name and role right after rule 3; with none the line is absent", () => {
     const two = buildPrompt({ worker, card, projectId: "p-1", recipients: [{ name: "แบงค์", roles: ["BE"] }, { name: "ฝน", roles: ["FE", "QA"] }] });
@@ -143,6 +160,9 @@ describe("buildChatPrompt (SPEC-C-004 § 1 step 3)", () => {
     expect(p).toContain(`\n${b2}\n3. `);
     expect(p.indexOf(b2)).toBeGreaterThan(p.indexOf("\n2. Call `locate`"));
     expect(p).toContain("only for parts `locate` returned or requirement keys from your system prompt, every item anchored on a located key");
+  });
+  test("SPEC-119 D3: step 3 gives each card to the chain member whose role does that work — a page or screen to the FE, the server and data to the BE", () => {
+    expect(p).toContain("each with your estimate of `hops`, and each given (`workerId`) to the chain member whose role does that work — a page or screen to the FE, the server and data to the BE.");
   });
   test("carries REQ-013's exact words for the reply", () => {
     expect(p).toContain("{n} งาน ใช้ประมาณ {h} ก้าว");

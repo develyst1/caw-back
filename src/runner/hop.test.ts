@@ -652,6 +652,32 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     expect(seen).toContain("BE craft");
     expect(seen).not.toContain("The spec's requirements");
   });
+  // REQ-121 (SPEC-119 D2, AC-2): a card hop's prompt tells the worker to do only its own card and names the other open work cards with their holders
+  test("REQ-121 AC-2: a card hop's prompt holds rule 2, rule 7 and the other-cards line — the open work card with its holder; not the own card, not the done one, not the question", async () => {
+    const c = await world(); // card #1 (own), #2 `another card` (todo, Blew)
+    const done = (await newCard(c.call, c.project.id, { title: "already done", assigneeId: c.worker.id })).json;
+    await c.call("PATCH", `/v1/cards/${done.id}/status`, { status: "done" });
+    await c.call("POST", `/v1/cards/${c.card.id}/question`, { text: "ใช้สีไหน?", proposedDefault: "น้ำเงิน", cases: ["น้ำเงิน"] }, c.actor); // a question card of the project
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.call("POST", `/v1/cards/${c.card.id}/comments`, { text: "done" }, c.actor); } }));
+    await runHop(c.deps, await c.input());
+    const prompt = c.spawned[0]!.cmd[2]!;
+    expect(prompt).toContain("2. Do only your card's work — its title and its `todo`.");
+    expect(prompt).toContain("7. If you find work that no card holds, say so in a `comment` (what is missing and why) — do not build it yourself.");
+    expect(prompt).toContain("Other cards hold their own work — leave it to them, even if you could do it now: #2 another card (Blew BE, todo).");
+    expect(prompt).not.toContain("already done"); // done: nothing to leave
+    expect(prompt).not.toContain("ใช้สีไหน?"); // a question is not work
+    expect(prompt).not.toContain(`#${1} `); // the own card is not listed (its number only appears in the "Your card is" line)
+  });
+  test("REQ-121: a cards read that throws → the hop still runs, no other-cards line, and the log says why", async () => {
+    const c = await world();
+    c.deps.api = { ...c.deps.api, cards: async () => { throw new RunnerApiError(500, "boom", "cards down"); } };
+    c.set(() => fakeChild({ lines: fixture("ok"), before: async () => { await c.call("POST", `/v1/cards/${c.card.id}/comments`, { text: "done" }, c.actor); } }));
+    await runHop(c.deps, await c.input());
+    expect(c.spawned).toHaveLength(1);
+    expect(c.spawned[0]!.cmd[2]).not.toContain("Other cards hold their own work");
+    expect(c.log.filter((l) => l.includes("the cards could not be read for the other-cards line"))).toHaveLength(1);
+    expect((await c.finished()).outcome).toBe("commented");
+  });
   test("a limit or a block on a chat hop ends it like any hop (no run to close)", async () => {
     const c = await chatWorld();
     c.set(() => fakeChild({ lines: limitFixture().slice(0, 14), hang: true }));

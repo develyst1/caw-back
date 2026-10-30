@@ -12,22 +12,28 @@ export type PromptCard = { id: string; number: number; title: string; todo: stri
 /** a worker this one may hand a card to (SPEC-116 D3.2) */
 export type PromptRecipient = { name: string; roles: string[] };
 
-export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string; recipients?: PromptRecipient[] }): string {
-  const { worker, card, projectId, recipients = [] } = input;
+/** another open work card of the project (SPEC-119 D2.2): its number, title, who holds it and its status — so the worker leaves that work to it */
+export type PromptOtherCard = { number: number; title: string; assignee: string | null; status: string };
+
+export function buildPrompt(input: { worker: PromptWorker; card: PromptCard; projectId: string; recipients?: PromptRecipient[]; others?: PromptOtherCard[] }): string {
+  const { worker, card, projectId, recipients = [], others = [] } = input;
   return [
     `คุณคือ ${worker.name} (${worker.roles.join(" + ")}) ทีมงาน AI ใน CAW — your role skills are in your system prompt: follow them.`,
     `Your card is ${card.id} (#${card.number}) in project ${projectId}.`,
     "",
     "1. Call the MCP tool `card_context` first (with that cardId), then do the work.",
     // REQ-112 (SPEC-109 D1): a rule on a related part binds the card too — Blueprint puts those in `spec.relatedDecisions`.
-    // REQ-118 (SPEC-117 D1): every requirement binds every card — Blueprint puts them in the part context's `requirements` field
-    "2. Follow every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` of your card's context — the requirements bind every card, whatever its anchor; a rule on a related part applies to your card too.",
+    // REQ-118 (SPEC-117 D1): every requirement binds every card — Blueprint puts them in the part context's `requirements` field.
+    // REQ-121 (SPEC-119 D2.1): they bind HOW the card's work is done; they are not this card's work list (TEST-106 P3-2: card #1 built all eight)
+    "2. Do only your card's work — its title and its `todo`. Every requirement in `spec.requirements` and every rule in `spec.decisions` and `spec.relatedDecisions` binds how you do it (a rule on a related part applies to your card too); they are not a list of work for this card.",
+    ...(others.length === 0 ? [] : [`Other cards hold their own work — leave it to them, even if you could do it now: ${others.map((o) => `#${o.number} ${o.title} (${o.assignee ?? "ยังไม่มีคนรับ"}, ${o.status})`).join("; ")}.`]),
     "3. End this step with exactly one of the MCP tools: `comment`, `hand_off`, `set_status`, `ask_operator`.",
     // SPEC-116 D3.2: the only other place a worker learns whom it may hand to is the refusal — say it up front, by name and role
     ...(recipients.length === 0 ? [] : [`You may hand off to: ${recipients.map((r) => `${r.name} (${r.roles.join(" + ")})`).join(", ")} — pass the name (or the id) as \`toWorkerId\` of \`hand_off\`.`]),
     "4. No git writes (no add, commit, push, branch, checkout). No web. Stay inside your working folders.",
     "5. If you cannot go on without a decision, use `ask_operator` with your proposed default — do not guess.",
     "6. In `comment` and `ask_operator` text, write line breaks as real new lines — never the two characters \\n.",
+    "7. If you find work that no card holds, say so in a `comment` (what is missing and why) — do not build it yourself.",
   ].join("\n");
 }
 
@@ -134,7 +140,7 @@ export function buildChatPrompt(input: { worker: PromptWorker; messageId: string
     `2. Call \`locate\` { projectId: "${projectId}", request } before anything else: it tells you which parts of the confirmed spec the request touches.`,
     // REQ-118 (SPEC-117 D2.3): the requirements are in the system prompt (hop.ts appends the block), and their keys may be anchors
     "2b. The spec's requirements are in your system prompt (`# The spec's requirements`). Propose cards so that every requirement that asks for work is taken up by a card anchored on its key — a requirement key may be an anchor even when `locate` did not return it.",
-    "3. If `locate` returned parts (candidates) for the request, propose cards for them with `propose_cards` — only for parts `locate` returned or requirement keys from your system prompt, every item anchored on a located key, each with your estimate of `hops`. Nothing is made until the operator accepts. Missing details are not a reason to hold the proposal back: put the questions in your reply (step 5).",
+    "3. If `locate` returned parts (candidates) for the request, propose cards for them with `propose_cards` — only for parts `locate` returned or requirement keys from your system prompt, every item anchored on a located key, each with your estimate of `hops`, and each given (`workerId`) to the chain member whose role does that work — a page or screen to the FE, the server and data to the BE. Nothing is made until the operator accepts. Missing details are not a reason to hold the proposal back: put the questions in your reply (step 5).",
     "4. Use `send_amendment` ONLY for what `locate` did not return (`notInSpec`), or when the request changes the spec itself — it asks Blueprint's chat to change the spec; do not invent a card for it.",
     "5. If you need decisions first, put ALL your questions in the one reply as `questions[]`, each with `text`, `proposedDefault` and `cases` — never one question at a time.",
     "6. Always end with exactly one `reply` in Thai. `reply` is mandatory — if you cannot do anything else, reply and say what blocks you.",

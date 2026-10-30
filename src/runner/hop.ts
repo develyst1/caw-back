@@ -237,6 +237,19 @@ async function recipientsOf(deps: HopDeps, projectId: string, workerId: string):
   }
 }
 
+/** The project's other open work cards, by number, with who holds each and its status (SPEC-119 D2.2). Like the hand-off line, an aid, not a gate: a read
+ *  that fails is logged and the hop goes on without the line. */
+async function otherCardsOf(deps: HopDeps, projectId: string, cardId: string): Promise<{ number: number; title: string; assignee: string | null; status: string }[]> {
+  try {
+    const [cards, { members }] = await Promise.all([deps.api.cards(projectId), deps.api.chain(projectId)]);
+    const who = (id: string | null) => { const m = members.find((x) => x.id === id); return m ? `${m.name} ${m.roles.join(" + ")}` : null; };
+    return cards.filter((c) => c.kind === "work" && c.id !== cardId && c.status !== "done").sort((a, b) => a.number - b.number).map((c) => ({ number: c.number, title: c.title, assignee: who(c.assigneeId), status: c.status }));
+  } catch (e) {
+    deps.log(`project ${projectId}: the cards could not be read for the other-cards line (${e instanceof Error ? e.message : String(e)}) — the hop goes on without it`);
+    return [];
+  }
+}
+
 /** The entry chat hop's requirements block (SPEC-117 D2.2). A requirements read that fails is logged (code and message only, never spec text) and the hop goes on with
  *  the one-line notice: its `locate` meets the same outage and the worker replies with what blocks it. */
 async function requirementsFor(deps: HopDeps, projectId: string): Promise<string> {
@@ -348,7 +361,9 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     // A chat hop also carries every requirement of the spec, in the same system-prompt file — not argv: n × 4000 Thai characters can pass the single-argument limit (SPEC-117 D2.2)
     const systemText = messageId === null ? skills.text : [skills.text, await requirementsFor(deps, project.id)].filter((t) => t !== "").join("\n\n---\n\n");
     const skillsFile = systemText === "" ? null : writeSkillsFile(dir, systemText);
-    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id, recipients: await recipientsOf(deps, project.id, worker.id) });
+    // a card hop: the hand-off line and the other-cards line are read together (one round of reads, not two — the next tick must not find the hop still unspawned)
+    const [recipients, others] = messageId !== null ? [[], []] : await Promise.all([recipientsOf(deps, project.id, worker.id), otherCardsOf(deps, project.id, card!.id)]);
+    const prompt = messageId !== null ? buildChatPrompt({ worker, messageId, projectId: project.id, thread: await threadFor(deps, project.id, messageId), folders: folderNames(project.workspace.roots) }) : buildPrompt({ worker, card: card!, projectId: project.id, recipients, others });
     // EVERY hop gets its own settings file = the runner's base + the read fence (UP-3: reads only inside the roots and this hop's folder) + the read-only
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
     const settingsFile = join(dir, "settings.json");
