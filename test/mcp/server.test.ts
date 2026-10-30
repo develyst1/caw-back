@@ -260,3 +260,29 @@ test("v1.13 scope: hand_off and ask_operator are NOT converted (D-078 asked for 
   expect(q.isError).toBe(false);
   expect(q.json.question).toEqual({ text: `ห้อง${BS_N}ใหญ่ไหม`, proposedDefault: `ต้อง${BS_N}`, cases: [`เล็ก${BS_N}`, "ใหญ่"] });
 });
+
+// REQ-122 (SPEC-120 D2): an open worker runs a new hop per task, so `hopId` may be a function — asked on every call, its value goes in `x-caw-hop`; `undefined` sends no header
+test("REQ-122: a function hopId is called per request and its value is sent as x-caw-hop; undefined → no header; a plain string still works", async () => {
+  const seen: (string | null)[] = [];
+  let current: string | undefined = "hop-1";
+  const fetched = (input: string, init?: RequestInit) => { seen.push(new Headers(init?.headers).get("x-caw-hop")); return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })); };
+  const open = async (hopId: Parameters<typeof createMcpServer>[0]["hopId"]) => {
+    const server = createMcpServer({ apiUrl: "http://caw.test", workerId: "w", hopId, fetch: fetched });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "1" });
+    await Promise.all([server.connect(a), client.connect(b)]);
+    closers.push(() => client.close());
+    return (cardId: string) => client.callTool({ name: "card_context", arguments: { cardId } });
+  };
+  const ask = await open(() => current);
+  await ask("c1");
+  current = "hop-2"; // the runner rewrote the file between two calls of the SAME server
+  await ask("c1");
+  current = undefined; // between tasks: no hop
+  await ask("c1");
+  expect(seen).toEqual(["hop-1", "hop-2", null]);
+  seen.length = 0;
+  await (await open("fixed-hop"))("c1");
+  await (await open(undefined))("c1");
+  expect(seen).toEqual(["fixed-hop", null]);
+});

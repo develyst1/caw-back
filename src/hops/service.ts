@@ -45,7 +45,9 @@ export async function startHop(db: Db, actor: Actor, projectId: string,
     const run = input.runId === undefined ? null : s.runs.find((r) => r.id === input.runId) ?? (() => { throw notFound("run"); })();
     if (run && run.endedAt !== null) throw new ApiError(409, "already_finished", "that run has ended");
     if (card && !isWorkable(s, card)) throw new ApiError(409, "not_workable", "that card is not workable (a question, done, in review, or waiting on a card)"); // REQ-105 D7: "or its spec changed" is gone — the flag no longer stops a card
-    if (s.hops.some((h) => h.endedAt === null)) throw new ApiError(409, "hop_running", "this project already has a hop running");
+    // REQ-122 (SPEC-120 D5.1): one running hop per worker and per card — the team works in parallel
+    if (s.hops.some((h) => h.endedAt === null && h.workerId === input.workerId)) throw new ApiError(409, "hop_running", "this worker already has a hop running");
+    if (card && s.hops.some((h) => h.endedAt === null && h.cardId === card.id)) throw new ApiError(409, "hop_running", "that card already has a hop running");
     // a chat hop is outside every budget (v1.8, D-055): it is neither checked against one nor counted in one.
     // REQ-120: the only budget is the run's (the number typed for อัตโนมัติ = this run's steps); Project.hopsUsed only counts
     if (!message && run && s.hops.filter((h) => h.runId === run.id && h.messageId === null).length >= run.hopBudget) {

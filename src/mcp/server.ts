@@ -3,7 +3,9 @@
 // edges, question cards …) apply unchanged and live in one place. The results are the API's JSON; an API error comes back as
 // a tool error whose text is the API's own error body, so the model sees the code (`not_your_card`, `chain_broken` …).
 //   env: CAW_API_URL (default http://127.0.0.1:4500) · CAW_WORKER_ID (required — refuses to start without it) ·
-//        CAW_HOP_ID (the worker's running hop, set by the runner per hop; without it every write tool answers hop_required)
+//        CAW_HOP_ID (the worker's running hop, set by the runner per hop; without it every write tool answers hop_required) ·
+//        CAW_HOP_FILE (REQ-122: a file holding the hop id, read on every call — an open worker runs a new hop per task; empty or missing = none; wins over CAW_HOP_ID)
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -16,7 +18,8 @@ const lineBreaks = (text: string): string => text.replaceAll("\\n", "\n");
 const fail = (error: { code: string; message: string; details?: unknown }): Result => ({ isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] });
 
 // hopId = the worker's running hop (v1.5, D-054): sent as X-CAW-Hop on every call; without it every write answers hop_required
-export type McpOptions = { apiUrl: string; workerId: string; hopId?: string; fetch?: (input: string, init?: RequestInit) => Promise<Response> };
+// a function is asked on every call: an open worker (REQ-122) runs a new hop per task, so its hop id is read from a file the runner rewrites
+export type McpOptions = { apiUrl: string; workerId: string; hopId?: string | (() => string | undefined); fetch?: (input: string, init?: RequestInit) => Promise<Response> };
 
 export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (input, init) => fetch(input, init) }: McpOptions): McpServer {
   const actor = `worker:${workerId}`;
@@ -24,10 +27,11 @@ export function createMcpServer({ apiUrl, workerId, hopId, fetch: fetchImpl = (i
   // one HTTP call: the parsed JSON on success, or the error to hand back as a tool error
   async function api(method: string, path: string, body?: unknown): Promise<{ json: any } | { error: Result }> {
     let res: Response;
+    const hop = typeof hopId === "function" ? hopId() : hopId;
     try {
       res = await fetchImpl(`${apiUrl}${path}`, {
         method,
-        headers: { "x-caw-actor": actor, ...(hopId ? { "x-caw-hop": hopId } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        headers: { "x-caw-actor": actor, ...(hop ? { "x-caw-hop": hop } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch {
@@ -171,6 +175,9 @@ if (import.meta.main) {
     console.error("CAW_WORKER_ID is required: the id of the CAW worker this MCP server acts as");
     process.exit(1);
   }
-  const server = createMcpServer({ apiUrl: process.env.CAW_API_URL || "http://127.0.0.1:4500", workerId, hopId: process.env.CAW_HOP_ID || undefined });
+  // CAW_HOP_FILE (REQ-122): an open worker's hop id, read on every call (empty or missing = none); else CAW_HOP_ID, fixed at spawn (a chat hop)
+  const hopFile = process.env.CAW_HOP_FILE || "";
+  const hopId = hopFile ? () => { try { return readFileSync(hopFile, "utf8").trim() || undefined; } catch { return undefined; } } : process.env.CAW_HOP_ID || undefined;
+  const server = createMcpServer({ apiUrl: process.env.CAW_API_URL || "http://127.0.0.1:4500", workerId, hopId });
   await server.connect(new StdioServerTransport());
 }

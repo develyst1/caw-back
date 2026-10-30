@@ -13,6 +13,9 @@ export type RunnerConfig = {
   hooks: string[];
   /** `host:port` of I-Space's own servers (REQ-113): a worker's command must never reach them. Optional so a config built by hand (tests) need not carry it; hop.ts reads it as `?? []`. */
   serverPorts?: string[];
+  /** REQ-122 (SPEC-120 D3): an open worker is restarted after this many tasks, when its last task's context reaches this many input tokens, and ended after this many idle ms.
+   *  Optional like `serverPorts`: a config built by hand (tests) need not carry them; the pool reads them as `?? default`. */
+  workerMaxTasks?: number; workerMaxTokens?: number; workerIdleMs?: number;
 };
 
 export class ConfigError extends Error {}
@@ -67,6 +70,9 @@ export function loadConfig(env: Env = process.env, fileExists: (path: string) =>
     serverPorts: serverPortsOf(env, apiUrl, warn),
     pollMs: positive("RUNNER_POLL_MS", env.RUNNER_POLL_MS || "2000"),
     hopMaxMs: positive("RUNNER_HOP_MAX_MS", env.RUNNER_HOP_MAX_MS || "1200000"),
+    workerMaxTasks: positive("RUNNER_WORKER_MAX_TASKS", env.RUNNER_WORKER_MAX_TASKS || "5"),
+    workerMaxTokens: positive("RUNNER_WORKER_MAX_TOKENS", env.RUNNER_WORKER_MAX_TOKENS || "150000"),
+    workerIdleMs: positive("RUNNER_WORKER_IDLE_MS", env.RUNNER_WORKER_IDLE_MS || "1800000"),
     claudeBin: bin.startsWith("~/") ? `${homedir()}${bin.slice(1)}` : bin,
     workspaceRoot: root,
     hooks,

@@ -13,6 +13,7 @@ import { ConfigError, loadConfig } from "./config";
 import { GuardError, probeHooks } from "./guard";
 import { type Child, type HopDeps, NOTES, bunSpawn, eventsAfter, runHop } from "./hop";
 import { planTick } from "./plan";
+import { type Session, WorkerPool } from "./pool";
 import { defaultHopsDir, listHopFiles, realProcs, reapLeftover, removeHopFile } from "./procs";
 import { buildReport } from "./report";
 import { ProjectWatch } from "./watch";
@@ -194,6 +195,10 @@ export function createRunner(deps: HopDeps & { instance: string }) {
     const hopRunning = adopted.running || [...activeIn.values()].includes(project.id);
     // a hop that ended since the listing must count toward its card's turn and the run's budget: list again
     const hops = adopted.stale ? await api.hops(project.id, 200) : listed;
+    // one hop per worker and per card (REQ-122): the store's running hops and the ones this process is still finishing
+    const mine = hops.filter((h) => h.endedAt === null || activeIn.has(h.id));
+    const busyWorkers = [...new Set(mine.map((h) => h.workerId))];
+    const busyCards = [...new Set(mine.flatMap((h) => (h.cardId === null ? [] : [h.cardId])))];
 
     // A hop stopped for the subscription limit whose run could not be closed (the API failed just then): close it now, before anything else.
     // Read from the store, so it survives a restart. Its note is exactly the stop words.
@@ -204,10 +209,11 @@ export function createRunner(deps: HopDeps & { instance: string }) {
 
     // The mode is read here, every tick, never cached (AC-3).
     let workable: Awaited<ReturnType<typeof api.workableCards>> = [];
-    if (project.mode === "dispatcher" && openRun && !hopRunning) {
+    if (project.mode === "dispatcher" && openRun) {
       workable = (await api.workableCards(project.id)).filter((c) => !refused.has(`${openRun.id}|${c.id}|${c.assigneeId}`));
     }
-    const pending = hopRunning ? null : await pendingMessage(project, hops);
+    // the chat waits only while the entry worker itself is busy (REQ-122)
+    const pending = project.entryWorkerId !== null && busyWorkers.includes(project.entryWorkerId) ? null : await pendingMessage(project, hops);
     if (pending && !project.entryWorkerId && !toldChat.has(`${pending.id}|entry`)) {
       toldChat.add(`${pending.id}|entry`);
       log(`message ${pending.id} waits: the project has no entry worker to answer the chat`);
@@ -218,6 +224,8 @@ export function createRunner(deps: HopDeps & { instance: string }) {
       runCanReopen: project.mode === "dispatcher" && !openRun ? runs.length === 0 || (await sync(project.id)).switchedSince(runs[0]!.id) : false,
       reviewFailed: project.mode === "dispatcher" && openRun ? (await sync(project.id)).reviewFailedIn(openRun.id) : null,
       hopRunning,
+      busyWorkers,
+      busyCards,
       pendingMessage: pending,
       entryWorkerId: project.entryWorkerId,
       workable,
@@ -269,21 +277,28 @@ export function createRunner(deps: HopDeps & { instance: string }) {
         }
         return;
       }
-      case "start_hop": {
-        try {
-          launch(project, await api.startHop(project.id, { cardId: action.cardId, workerId: action.workerId, runId: openRun!.id, claim: instance }));
-        } catch (e) {
-          if (!(e instanceof RunnerApiError)) throw e;
-          if (e.code === "hop_running" || e.code === "not_workable") return; // lost a race; the next tick sees how it ended
-          if (e.code === "no_budget") return await endRun(project.id, openRun!.id, "budget_spent"); // the run's budget, filled since the listing (REQ-120: the only budget)
-          if (e.status >= 400 && e.status < 500) {
-            // e.g. not_a_member (the card's assignee is not in the chain): that card's problem, not the run's. Say so once, leave the
-            // card where it is, and go on with the next one
-            refused.add(`${openRun!.id}|${action.cardId}|${action.workerId}`);
-            log(`card ${action.cardId}: the API refused a hop for worker ${action.workerId} (${e.code}) — skipped for this run`);
-            return;
+      case "start_hops": {
+        // every idle worker's next card, one after another (REQ-122); each refusal is that card's alone, except the budget, which ends the run
+        for (const s of action.hops) {
+          try {
+            launch(project, await api.startHop(project.id, { cardId: s.cardId, workerId: s.workerId, runId: openRun!.id, claim: instance }));
+          } catch (e) {
+            if (!(e instanceof RunnerApiError)) throw e;
+            if (e.code === "hop_running" || e.code === "not_workable") continue; // lost a race; the next tick sees how it ended
+            if (e.code === "no_budget") {
+              // the run's budget, filled since the listing (REQ-120: the only budget); with hops of ours still running the run ends when they do
+              if (![...activeIn.values()].includes(project.id)) await endRun(project.id, openRun!.id, "budget_spent");
+              return;
+            }
+            if (e.status >= 400 && e.status < 500) {
+              // e.g. not_a_member (the card's assignee is not in the chain): that card's problem, not the run's. Say so once, leave the
+              // card where it is, and go on with the next one
+              refused.add(`${openRun!.id}|${s.cardId}|${s.workerId}`);
+              log(`card ${s.cardId}: the API refused a hop for worker ${s.workerId} (${e.code}) — skipped for this run`);
+              continue;
+            }
+            throw e; // not the card's fault (network, 5xx, unreadable body): the tick logs it and the next tick tries again — the card is NOT banned
           }
-          throw e; // not the card's fault (network, 5xx, unreadable body): the tick logs it and the next tick tries again — the card is NOT banned
         }
         return;
       }
@@ -305,6 +320,8 @@ export function createRunner(deps: HopDeps & { instance: string }) {
       }
     },
     async tick() {
+      // REQ-122 (SPEC-120 D3): an open worker idle for RUNNER_WORKER_IDLE_MS is closed; a process that died while idle is dropped
+      try { await deps.pool?.sweepIdle(); } catch (e) { log(`workers: ${messageOf(e)}`); }
       let projects: Project[];
       try { projects = await api.projects(); } catch (e) { log(`projects: ${messageOf(e)}`); return; }
       for (const p of projects) {
@@ -323,17 +340,21 @@ export const CHECK_IN_MS = 15_000;
 /** The runner's check-in (TASK-C-040): `running` at start and then on its OWN timer — not the poll loop, not a hop — and one `stopping` at a clean stop.
  *  A failed check-in is logged once per failure streak (and once on recovery) and never stops the runner. `every` is the scheduler (default setInterval). */
 export function createCheckIn(o: {
-  api: { checkIn(state: "running" | "stopping"): Promise<void> }; log: (line: string) => void;
+  api: { checkIn(state: "running" | "stopping", sessions?: Session[]): Promise<void> }; log: (line: string) => void;
   intervalMs?: number; stopTimeoutMs?: number; every?: (fn: () => void, ms: number) => () => void;
+  /** REQ-122 (SPEC-120 D6.2): the open worker sessions, sent with every `running` check-in (the timer's and `poke`'s); without it the check-in carries none, as before */
+  sessions?: () => Session[];
 }) {
   const every = o.every ?? ((fn, ms) => { const t = setInterval(fn, ms); return () => clearInterval(t); });
   let cancel: (() => void) | null = null;
   let closed = false;
   let failing = false;
   let inFlight = false;
+  let again = false; // a poke came while a check-in was on its way
   const send = async (state: "running" | "stopping") => {
     try {
-      await o.api.checkIn(state);
+      if (o.sessions && state === "running") await o.api.checkIn(state, o.sessions());
+      else await o.api.checkIn(state);
       if (failing) { failing = false; o.log("check-in is back"); }
     } catch (e) {
       if (!failing) { failing = true; o.log(`check-in failed: ${e instanceof RunnerApiError ? `${e.code} (${e.status})` : messageOf(e)} — the team shows as not running until it works; the runner goes on, and says so once more when it is back`); }
@@ -345,6 +366,13 @@ export function createCheckIn(o: {
     async start() {
       await send("running");
       cancel = every(() => { if (closed || inFlight) return; inFlight = true; void send("running").finally(() => { inFlight = false; }); }, o.intervalMs ?? CHECK_IN_MS);
+    },
+    /** A worker opened, closed, started a task or ended one: tell the core now (not awaited). One already on its way? Then one more follows it, so the newest list is always the last. */
+    poke() {
+      if (closed || cancel === null) return; // not started yet (the first check-in goes out in start()) or already stopped
+      if (inFlight) { again = true; return; }
+      const go = () => { inFlight = true; void send("running").finally(() => { inFlight = false; if (again && !closed) { again = false; go(); } }); };
+      go();
     },
     /** clear the timer and send ONE `stopping`, waiting at most `stopTimeoutMs` (default 1 s) for it; a second call does nothing */
     async stop() {
@@ -378,9 +406,13 @@ if (import.meta.main) {
   const live = new Set<Child>();
   let stopping = false;
   const api = createApi(config.apiUrl, `runner:${instance}`);
-  const checkIn = createCheckIn({ api, log });
+  // REQ-122: one open process per (project, worker); the check-in carries its sessions and is poked when one opens, closes, starts a task or ends one
+  const pool: WorkerPool = new WorkerPool({
+    tmpRoot, log, maxTasks: config.workerMaxTasks, maxTokens: config.workerMaxTokens, idleMs: config.workerIdleMs, onChange: () => checkIn.poke(),
+  });
+  const checkIn = createCheckIn({ api, log, sessions: () => pool.sessions() });
   const runner = createRunner({
-    api, config, tmpRoot, settingsFile, log, cursors: new Map(), instance, stopping: () => stopping, traceDir, secrets,
+    api, config, tmpRoot, settingsFile, log, cursors: new Map(), instance, stopping: () => stopping, traceDir, secrets, pool,
     spawn: (cmd, opts) => { const c = bunSpawn(cmd, opts); live.add(c); void c.exited.finally(() => live.delete(c)); return c; },
   });
 
@@ -390,6 +422,7 @@ if (import.meta.main) {
     if (stopping) return;
     stopping = true;
     log(`${signal}: stopping ${live.size} child process(es)`);
+    pool.closeAll(); // idle open workers get EOF; the busy ones are killed below with the rest, their hops left running for the next runner
     for (const c of live) c.kill();
     try { rmSync(tmpRoot, { recursive: true, force: true }); } catch (e) { log(`could not remove ${tmpRoot}: ${messageOf(e)}`); }
     // tell the core before going: the team shows as not running at once, not 45 s later. At most 1 s; a failure is only logged.

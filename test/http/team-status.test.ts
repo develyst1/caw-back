@@ -33,14 +33,14 @@ async function world() {
 test("a fresh API: not running, nobody seen, and the start command the screen shows", async () => {
   const w = await world();
   const r = await w.call("GET", "/v1/team-status", undefined, null); // a read: no actor needed
-  expect([r.status, r.json]).toEqual([200, { running: false, runnerName: null, lastSeenAt: null, startCommand: START }]);
+  expect([r.status, r.json]).toEqual([200, { running: false, runnerName: null, lastSeenAt: null, startCommand: START, sessions: [] }]);
 });
 
 test("a `running` check-in as runner:r1 → 204, then team-status says running with the runner's name and the check-in time", async () => {
   const w = await world();
   const r = await w.checkIn();
   expect([r.status, r.json]).toEqual([204, null]);
-  expect(await w.status()).toEqual({ running: true, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:00.000Z", startCommand: START });
+  expect(await w.status()).toEqual({ running: true, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:00.000Z", startCommand: START, sessions: [] });
 });
 
 test("running is a `running` check-in in the last 45 s: 45.000 s still running, 45.001 s and 46 s not — and lastSeenAt is kept", async () => {
@@ -53,7 +53,7 @@ test("running is a `running` check-in in the last 45 s: 45.000 s still running, 
   w.later(0.001);
   expect((await w.status()).running).toBe(false);
   w.later(0.999); // 46 s after the check-in
-  expect(await w.status()).toEqual({ running: false, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:00.000Z", startCommand: START });
+  expect(await w.status()).toEqual({ running: false, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:00.000Z", startCommand: START, sessions: [] });
 });
 
 test("a `stopping` check-in makes running false AT ONCE, keeps the name, and moves lastSeenAt; a later `running` check-in makes it true again", async () => {
@@ -63,7 +63,7 @@ test("a `stopping` check-in makes running false AT ONCE, keeps the name, and mov
   w.later(2);
   const stop = await w.checkIn("runner:r1", { state: "stopping" });
   expect(stop.status).toBe(204);
-  expect(await w.status()).toEqual({ running: false, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:02.000Z", startCommand: START });
+  expect(await w.status()).toEqual({ running: false, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:02.000Z", startCommand: START, sessions: [] });
   w.later(1);
   await w.checkIn();
   expect(await w.status()).toMatchObject({ running: true, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:03.000Z" });
@@ -75,7 +75,7 @@ test("a later check-in moves lastSeenAt and makes it running again; the last run
   w.later(50);
   expect((await w.status()).running).toBe(false);
   await w.checkIn("runner:r2");
-  expect(await w.status()).toEqual({ running: true, runnerName: "r2", lastSeenAt: "2026-10-20T10:00:50.000Z", startCommand: START });
+  expect(await w.status()).toEqual({ running: true, runnerName: "r2", lastSeenAt: "2026-10-20T10:00:50.000Z", startCommand: START, sessions: [] });
 });
 
 test("the state is required and checked: a missing body, no state, `paused`, a number, or a non-object → 400 validation, and nothing is recorded", async () => {
@@ -84,7 +84,7 @@ test("the state is required and checked: a missing body, no state, `paused`, a n
     const r = await w.call("POST", "/v1/runner/check-in", body, "runner:r1");
     expect([JSON.stringify(body), r.status, r.json?.error?.code]).toEqual([JSON.stringify(body), 400, "validation"]);
   }
-  expect(await w.status()).toEqual({ running: false, runnerName: null, lastSeenAt: null, startCommand: START });
+  expect(await w.status()).toEqual({ running: false, runnerName: null, lastSeenAt: null, startCommand: START, sessions: [] });
 });
 
 test("only a runner checks in: the operator and a worker → 403 runner_only, nothing recorded; no actor → 400 actor_required", async () => {
@@ -96,7 +96,7 @@ test("only a runner checks in: the operator and a worker → 403 runner_only, no
   }
   const none = await w.checkIn(null);
   expect([none.status, none.json.error.code]).toEqual([400, "actor_required"]);
-  expect(await w.status()).toEqual({ running: false, runnerName: null, lastSeenAt: null, startCommand: START });
+  expect(await w.status()).toEqual({ running: false, runnerName: null, lastSeenAt: null, startCommand: START, sessions: [] });
 });
 
 test("a check-in writes NO event and no table row — the events count is unchanged (the one exception to 'every write is an event', SPEC § R1b)", async () => {
@@ -120,7 +120,7 @@ test("the status belongs to the app that made it: a second app starts empty (aft
   await w.checkIn();
   const again = createApp(w.db, { team: createTeamStatus(() => w.clock.now) });
   const res = await again.request("/v1/team-status");
-  expect(await res.json()).toEqual({ running: false, runnerName: null, lastSeenAt: null, startCommand: START });
+  expect(await res.json()).toEqual({ running: false, runnerName: null, lastSeenAt: null, startCommand: START, sessions: [] });
   expect((await w.status()).running).toBe(true); // the first app is untouched
 });
 
@@ -128,4 +128,54 @@ test("the runner is still refused on every other write (the check-in is the one 
   const w = await world();
   const r = await w.call("POST", "/v1/workers", { name: "x", roles: ["BE"], skills: ["s"] }, "runner:r1");
   expect([r.status, r.json.error.code]).toEqual([403, "runner_not_allowed"]);
+});
+
+// REQ-122 (SPEC-120 D6.1): the check-in carries the runner's open worker sessions, and team-status lists them while the runner is running
+const session = (state: "idle" | "busy" = "idle") => ({ projectId: crypto.randomUUID(), workerId: crypto.randomUUID(), state });
+
+test("REQ-122 (c): a check-in with 2 sessions → team-status lists them, in the order sent", async () => {
+  const w = await world();
+  const two = [session("busy"), session("idle")];
+  expect((await w.checkIn("runner:r1", { state: "running", sessions: two })).status).toBe(204);
+  expect((await w.status()).sessions).toEqual(two);
+});
+
+test("REQ-122 (d): a later check-in with 1 session → only that one (replaced, not merged)", async () => {
+  const w = await world();
+  await w.checkIn("runner:r1", { state: "running", sessions: [session(), session()] });
+  const one = [session("busy")];
+  w.later(15);
+  await w.checkIn("runner:r1", { state: "running", sessions: one });
+  expect((await w.status()).sessions).toEqual(one);
+  w.later(15);
+  await w.checkIn(); // no `sessions` at all → none open
+  expect((await w.status()).sessions).toEqual([]);
+});
+
+test("REQ-122 (e): a `stopping` check-in → sessions [] at once, even when it carries some", async () => {
+  const w = await world();
+  await w.checkIn("runner:r1", { state: "running", sessions: [session()] });
+  w.later(1);
+  await w.checkIn("runner:r1", { state: "stopping", sessions: [session()] });
+  expect(await w.status()).toMatchObject({ running: false, sessions: [] });
+});
+
+test("REQ-122 (f): stale after 45 s → sessions [] with the check-in's name and time kept", async () => {
+  const w = await world();
+  await w.checkIn("runner:r1", { state: "running", sessions: [session()] });
+  w.later(45);
+  expect((await w.status()).sessions).toHaveLength(1); // exactly 45.000 s: still running
+  w.later(0.001);
+  expect(await w.status()).toMatchObject({ running: false, runnerName: "r1", lastSeenAt: "2026-10-20T10:00:00.000Z", sessions: [] });
+});
+
+test("REQ-122 (g): a session with state `paused` or a non-uuid id, or more than 200 sessions → 400 validation, nothing recorded", async () => {
+  const w = await world();
+  await w.checkIn("runner:r1", { state: "running", sessions: [session("busy")] });
+  const kept = (await w.status()).sessions;
+  for (const sessions of [[{ ...session(), state: "paused" }], [{ ...session(), workerId: "not-a-uuid" }], [{ ...session(), projectId: "x" }], Array.from({ length: 201 }, () => session())]) {
+    const r = await w.checkIn("runner:r1", { state: "running", sessions });
+    expect([r.status, r.json?.error?.code]).toEqual([400, "validation"]);
+  }
+  expect((await w.status()).sessions).toEqual(kept); // the refused check-ins changed nothing
 });

@@ -45,6 +45,24 @@ describe("loadConfig", () => {
     expect(() => load(env(), allHooks, (p) => !p.endsWith(notExec))).toThrow(/not executable.*block-shell-edits/);
   });
 
+  // REQ-122 (SPEC-120 D3): the open worker's three limits — default, set, bad (and a blank .env line falls back too)
+  test("open worker limits — defaults 5 tasks, 150 000 tokens, 30 min idle; an empty value falls back", () => {
+    const c = load(env(), allHooks);
+    expect([c.workerMaxTasks, c.workerMaxTokens, c.workerIdleMs]).toEqual([5, 150_000, 1_800_000]);
+    const blank = load(env({ RUNNER_WORKER_MAX_TASKS: "", RUNNER_WORKER_MAX_TOKENS: "", RUNNER_WORKER_IDLE_MS: "" }), allHooks);
+    expect([blank.workerMaxTasks, blank.workerMaxTokens, blank.workerIdleMs]).toEqual([5, 150_000, 1_800_000]);
+  });
+  test("open worker limits — RUNNER_WORKER_MAX_TASKS / _MAX_TOKENS / _IDLE_MS are taken", () => {
+    const c = load(env({ RUNNER_WORKER_MAX_TASKS: "2", RUNNER_WORKER_MAX_TOKENS: "9000", RUNNER_WORKER_IDLE_MS: "60000" }), allHooks);
+    expect([c.workerMaxTasks, c.workerMaxTokens, c.workerIdleMs]).toEqual([2, 9000, 60000]);
+  });
+  test("open worker limits — one that is not a positive number refuses to start and names the variable", () => {
+    expect(() => load(env({ RUNNER_WORKER_MAX_TASKS: "abc" }), allHooks)).toThrow(/RUNNER_WORKER_MAX_TASKS/);
+    expect(() => load(env({ RUNNER_WORKER_MAX_TOKENS: "0" }), allHooks)).toThrow(/RUNNER_WORKER_MAX_TOKENS/);
+    expect(() => load(env({ RUNNER_WORKER_IDLE_MS: "-5" }), allHooks)).toThrow(/RUNNER_WORKER_IDLE_MS/);
+    expect(() => load(env({ RUNNER_WORKER_MAX_TASKS: "abc" }), allHooks)).toThrow(ConfigError);
+  });
+
   test("refuses a poll or timeout that is not a positive number", () => {
     expect(() => load(env({ RUNNER_POLL_MS: "abc" }), allHooks)).toThrow(/RUNNER_POLL_MS/);
     expect(() => load(env({ RUNNER_HOP_MAX_MS: "0" }), allHooks)).toThrow(/RUNNER_HOP_MAX_MS/);

@@ -1,14 +1,15 @@
 // The runner's tick (manual mode only in TASK-C-030) against the real app on PGlite and a fake `claude`.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chainOf3, mkWorker, newCard, setup } from "../../test/helpers/api";
 import { RunnerApiError, createApi } from "./api";
 import { type HopFile, type Procs, readHopFile, writeHopFile } from "./procs";
 import { HOOKS } from "./config";
-import type { HopDeps } from "./hop";
+import type { Child, HopDeps } from "./hop";
 import { createCheckIn, createRunner } from "./main";
+import { WorkerPool } from "./pool";
 import { type FakeChild, fakeChild, fixture, hopAware, limitFixture } from "./testkit";
 import { formatReset } from "./thai";
 
@@ -385,6 +386,100 @@ describe("tick — automatic mode (TASK-C-031)", () => {
     const [run] = await a.runs();
     expect([run!.stopReason]).toEqual(["no_progress"]);
     expect(run!.report).toContain("- เหตุที่จบรอบ: มีงานที่ยังทำต่อได้ แต่ไม่คืบ");
+  });
+
+  // REQ-122 (SPEC-120 D5.2): every idle worker starts its next card in the SAME tick — two workers, two workable cards, both hops running at once
+  test("REQ-122: 2 workers with 1 workable card each → both hops start in one tick and run side by side (2 hop rows running at once)", async () => {
+    const a = await auto(2, 10);
+    const second = await mkWorker(a.call, "Second", "BE", ["role-be"]);
+    await a.call("POST", `/v1/projects/${a.project.id}/chain/members`, { workerId: second.id });
+    expect((await a.call("PATCH", `/v1/cards/${a.cards[1]!.id}/assignee`, { workerId: second.id })).status).toBe(200);
+    a.set(() => fakeChild({ lines: fixture("ok"), hang: true })); // both children stay open until released
+    const r = a.runner();
+    for (let i = 0; i < 6 && a.spawned.length < 2; i++) await r.tick(); // one quiet tick, the run opens, then the tick that starts the hops
+    expect(a.spawned).toHaveLength(2);
+    const running = (await a.hops()).filter((h) => h.endedAt === null);
+    expect(running.map((h) => h.workerId).sort()).toEqual([a.worker.id, second.id].sort());
+    expect(running.map((h) => h.cardId).sort()).toEqual([a.cards[0]!.id, a.cards[1]!.id].sort());
+    await r.tick(); // a further tick starts nothing while both run
+    expect(a.spawned).toHaveLength(2);
+    for (const c of a.children) c.release();
+    await r.idle();
+  });
+
+  // REQ-122 (SPEC-120 D1/D5/D6.2): two workers, two cards, ONE open process each — both tasks run side by side, and the check-in carries 2 `busy` sessions, then 2 `idle`
+  test("REQ-122: 2 workers run in parallel on open processes, and checkIn is called with 2 busy sessions, then idle", async () => {
+    const a = await auto(2, 10);
+    const second = await mkWorker(a.call, "Second", "BE", ["role-be"]);
+    await a.call("POST", `/v1/projects/${a.project.id}/chain/members`, { workerId: second.id });
+    expect((await a.call("PATCH", `/v1/cards/${a.cards[1]!.id}/assignee`, { workerId: second.id })).status).toBe(200);
+
+    // an open `claude`: stdout open across tasks, each stdin line is one task — held until the test opens the gate, then it works as its worker and prints the recorded stream
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    const tasks: { workerId: string; hopFileId: string }[] = [];
+    const stubs: { written: string[]; ended: boolean }[] = [];
+    const spawnOpen = (cmd: string[]): Child => {
+      const mcp = JSON.parse(readFileSync(cmd[cmd.indexOf("--mcp-config") + 1]!, "utf8")).mcpServers.caw.env as { CAW_WORKER_ID: string; CAW_HOP_FILE: string };
+      let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+      let done!: (c: number) => void;
+      const exited = new Promise<number>((r) => { done = r; });
+      const close = (c: number) => { try { ctrl.close(); } catch { /* closed */ } done(c); };
+      const rec = { written: [] as string[], ended: false };
+      stubs.push(rec);
+      return {
+        exited, stderrText: async () => "", kill: () => close(143),
+        stdout: new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } }),
+        stdin: {
+          write(line) {
+            rec.written.push(line);
+            void (async () => {
+              const hopFileId = readFileSync(mcp.CAW_HOP_FILE, "utf8").trim();
+              tasks.push({ workerId: mcp.CAW_WORKER_ID, hopFileId });
+              await gate;
+              const cardId = /Your card is (\S+)/.exec(JSON.parse(line).message.content)![1]!;
+              const as = `worker:${mcp.CAW_WORKER_ID}`;
+              await a.call("PATCH", `/v1/cards/${cardId}/status`, { status: "review" }, as, { "x-caw-hop": hopFileId });
+              await a.call("POST", `/v1/cards/${cardId}/comments`, { text: "done" }, as, { "x-caw-hop": hopFileId });
+              for (const l of fixture("ok")) ctrl.enqueue(new TextEncoder().encode(`${l}\n`));
+            })();
+          },
+          end() { rec.ended = true; close(0); },
+        },
+      };
+    };
+    a.set(() => { throw new Error("a card hop must go through the pool"); }); // not the fake-child maker of auto(): every spawn is below
+    const calls: { state: string; sessions: { projectId: string; workerId: string; state: string }[] | undefined }[] = [];
+    let pool!: WorkerPool;
+    const checkIn = createCheckIn({ api: { checkIn: async (state, sessions) => { calls.push({ state, sessions }); } }, log: () => {}, every: () => () => {}, sessions: () => pool.sessions() });
+    pool = new WorkerPool({ tmpRoot: tmp("caw-main-pool-"), log: (l) => a.log.push(l), procs: noProcs, killGraceMs: 10, onChange: () => checkIn.poke() });
+    const deps = a.mkDeps();
+    const r = createRunner({ ...deps, pool, spawn: (cmd) => spawnOpen(cmd), instance: "inst-A" });
+    await checkIn.start();
+    for (let i = 0; i < 8 && tasks.length < 2; i++) { await r.tick(); await new Promise((x) => setTimeout(x, 25)); } // a quiet tick, the run opens, then the tick that starts both tasks
+    expect(stubs).toHaveLength(2); // two workers, two processes
+    expect(stubs.map((s) => s.written.length)).toEqual([1, 1]);
+    expect(tasks.map((t) => t.workerId).sort()).toEqual([a.worker.id, second.id].sort());
+    expect(new Set(tasks.map((t) => t.hopFileId)).size).toBe(2); // each task read ITS hop id from its worker's file
+    const running = (await a.hops()).filter((h) => h.endedAt === null);
+    expect(running).toHaveLength(2); // both hops running at once
+    expect(new Set(tasks.map((t) => t.hopFileId))).toEqual(new Set(running.map((h) => h.id)));
+    await new Promise((x) => setTimeout(x, 25));
+    const busy = (c: typeof calls[number]) => c.sessions?.length === 2 && c.sessions.every((s) => s.state === "busy");
+    expect(calls.some(busy)).toBe(true); // the poke at task start
+
+    open(); // the gate: both tasks finish
+    await r.idle();
+    await new Promise((x) => setTimeout(x, 25));
+    expect((await a.hops()).filter((h) => h.runId !== null).map((h) => h.outcome)).toEqual(["commented", "commented"]);
+    const last = calls.at(-1)!;
+    expect([last.state, last.sessions!.map((s) => s.state)]).toEqual(["running", ["idle", "idle"]]); // and the poke at task end
+    expect(stubs.every((s) => !s.ended)).toBe(true); // the processes stay open
+    expect(pool.sessions()).toHaveLength(2);
+
+    pool.closeAll(); // the runner stops: EOF to both
+    expect(stubs.every((s) => s.ended)).toBe(true);
+    await checkIn.stop();
   });
 
   test("a card with no assignee is left alone", async () => {
@@ -939,6 +1034,53 @@ describe("the runner's check-in (TASK-C-040, contract v1.16 rev. 1, REQ-015 R1)"
     m.clock.fire(); await settle();
     expect(calls).toEqual(["running", "running", "running"]);
     hopDone(); await longHop;
+  });
+  // REQ-122 (SPEC-120 D6.2): the open sessions ride on every `running` check-in, and a worker opening / closing / starting / ending a task pokes one at once
+  test("sessions: sent with every `running` check-in (start, the timer, a poke) and never with `stopping`; without a source the check-in carries none, as before", async () => {
+    const clock = fakeClock();
+    const calls: { state: string; sessions?: unknown }[] = [];
+    let open = [{ projectId: "p", workerId: "w1", state: "idle" as const }];
+    const ci = createCheckIn({ api: { checkIn: async (state, sessions) => { calls.push(sessions === undefined ? { state } : { state, sessions }); } }, log: () => {}, every: clock.every, sessions: () => open });
+    await ci.start();
+    open = [{ projectId: "p", workerId: "w1", state: "busy" as never }];
+    ci.poke(); await settle();
+    clock.fire(); await settle();
+    await ci.stop();
+    expect(calls).toEqual([
+      { state: "running", sessions: [{ projectId: "p", workerId: "w1", state: "idle" }] },
+      { state: "running", sessions: [{ projectId: "p", workerId: "w1", state: "busy" }] },
+      { state: "running", sessions: [{ projectId: "p", workerId: "w1", state: "busy" }] },
+      { state: "stopping" },
+    ]);
+    const bare: unknown[][] = [];
+    const plain = createCheckIn({ api: { checkIn: async (...args) => { bare.push(args); } }, log: () => {}, every: clock.every });
+    await plain.start();
+    expect(bare).toEqual([["running"]]); // no `sessions` argument at all
+    await plain.stop();
+  });
+  test("poke(): not before start(), not after stop(); while one is on its way a second poke waits and the NEWEST list goes out last", async () => {
+    const clock = fakeClock();
+    const sent: string[] = [];
+    let current = "a";
+    let release!: () => void;
+    let hold: Promise<void> | null = null;
+    const ci = createCheckIn({
+      api: { checkIn: async (_s, sessions) => { sent.push(String((sessions as unknown as string[])[0])); if (hold) await hold; } },
+      log: () => {}, every: clock.every, sessions: () => [current] as never,
+    });
+    ci.poke(); await settle();
+    expect(sent).toEqual([]); // not started yet
+    await ci.start();
+    expect(sent).toEqual(["a"]);
+    hold = new Promise<void>((r) => { release = r; });
+    current = "b"; ci.poke(); await settle(); // one is on its way (held)
+    current = "c"; ci.poke(); ci.poke(); await settle(); // two more while it is held: they coalesce into ONE that follows
+    expect(sent).toEqual(["a", "b"]);
+    hold = null; release(); await settle(); await settle();
+    expect(sent).toEqual(["a", "b", "c"]);
+    await ci.stop();
+    ci.poke(); await settle();
+    expect(sent).toEqual(["a", "b", "c"]); // after stop: nothing
   });
   test("the interval is injectable", async () => {
     const clock = fakeClock();

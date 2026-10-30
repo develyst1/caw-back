@@ -173,3 +173,52 @@ describe("tokens of a stream that was cut before its `result` (a stopped hop) �
     expect(summarize([a(1), a(7)]).tokensOut).toBe(7);
   });
 });
+
+// REQ-122 (SPEC-120 D1.8): with an open worker the `result` line is the end of one task — `done` says it was read
+describe("done (an open worker's task ends at its result)", () => {
+  test("false on every line of the recorded run up to its result, true from the result on", () => {
+    const st = new StreamState();
+    expect(st.done).toBe(false);
+    const all = lines("ok");
+    const at = all.findIndex((l) => JSON.parse(l).type === "result");
+    expect(at).toBeGreaterThan(0);
+    all.forEach((l, i) => {
+      st.feed(l);
+      expect([i, st.done]).toEqual([i, i >= at]);
+    });
+  });
+  test("a stream that stops before a result is never done", () => {
+    const st = new StreamState();
+    for (const l of lines("ok").filter((l) => JSON.parse(l).type !== "result")) st.feed(l);
+    expect(st.done).toBe(false);
+  });
+});
+
+// REQ-122 round 2 (SPEC-120 D3 r2, TEST-121 DEF-1): `lastContext` = the LAST model call's prompt, the session's real context — not `tokensIn`, which adds up every call of the task
+describe("lastContext", () => {
+  const asst = (id: string, u: { input: number; creation?: number; read?: number }) =>
+    JSON.stringify({ type: "assistant", message: { id, usage: { input_tokens: u.input, cache_creation_input_tokens: u.creation ?? 0, cache_read_input_tokens: u.read ?? 0, output_tokens: 5 } } });
+  const result = (u: { input: number; creation?: number; read?: number }) =>
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, usage: { input_tokens: u.input, cache_creation_input_tokens: u.creation ?? 0, cache_read_input_tokens: u.read ?? 0, output_tokens: 15 } });
+
+  test("(a) three calls (10k+26k, 11k+30k, 12k+33k) and a result that sums them to 122 000 → lastContext is the LAST call's 45 000, tokensIn stays the summed 122 000", () => {
+    const s = summarize([asst("m1", { input: 10_000, read: 26_000 }), asst("m2", { input: 11_000, read: 30_000 }), asst("m3", { input: 12_000, read: 33_000 }), result({ input: 33_000, read: 89_000 })]);
+    expect(s.lastContext).toBe(45_000);
+    expect(s.tokensIn).toBe(122_000);
+  });
+  test("(b) only a result, no assistant usage → lastContext is null (never the summed usage)", () => {
+    const s = summarize([result({ input: 5, creation: 100, read: 200 })]);
+    expect(s.lastContext).toBeNull();
+    expect(s.tokensIn).toBe(305);
+    expect(summarize([]).lastContext).toBeNull();
+  });
+  test("(c) one message on several lines (the same id, growing usage) → that message's LAST value; input + cacheCreation + cacheRead all count", () => {
+    const s = summarize([asst("m1", { input: 5_000, creation: 1_000 }), asst("m1", { input: 5_000, creation: 1_000, read: 20_000 }), result({ input: 5_000, creation: 1_000, read: 20_000 })]);
+    expect(s.lastContext).toBe(26_000);
+  });
+  test("the recorded `ok` run: lastContext is its one call's prompt, which here equals the result's input side", () => {
+    const s = summarize(lines("ok"));
+    expect(s.lastContext).not.toBeNull();
+    expect(s.lastContext).toBeLessThanOrEqual(s.tokensIn!);
+  });
+});

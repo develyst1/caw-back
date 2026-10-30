@@ -1340,6 +1340,31 @@
         ],
         "type": "object"
       },
+      "TeamSession": {
+        "properties": {
+          "projectId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "idle",
+              "busy"
+            ],
+            "type": "string"
+          },
+          "workerId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectId",
+          "workerId",
+          "state"
+        ],
+        "type": "object"
+      },
       "TeamStatus": {
         "properties": {
           "lastSeenAt": {
@@ -1359,6 +1384,13 @@
             "description": "the last check-in said `running` and is at most 45 s old (a `stopping` check-in makes it false at once)",
             "type": "boolean"
           },
+          "sessions": {
+            "description": "the runner's open worker sessions (REQ-122); [] when running is false",
+            "items": {
+              "$ref": "#/components/schemas/TeamSession"
+            },
+            "type": "array"
+          },
           "startCommand": {
             "description": "what the screen tells the operator to run when running is false",
             "enum": [
@@ -1371,7 +1403,8 @@
           "running",
           "runnerName",
           "lastSeenAt",
-          "startCommand"
+          "startCommand",
+          "sessions"
         ],
         "type": "object"
       },
@@ -5338,6 +5371,13 @@
             "application/json": {
               "schema": {
                 "properties": {
+                  "sessions": {
+                    "items": {
+                      "$ref": "#/components/schemas/TeamSession"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  },
                   "state": {
                     "enum": [
                       "running",
@@ -5358,7 +5398,7 @@
         },
         "responses": {
           "204": {
-            "description": "noted — the name is the runner's actor, the time is the core's clock; only `state` is read from the body"
+            "description": "noted — the name is the runner's actor, the time is the core's clock; `state` and the optional `sessions` are read from the body"
           },
           "400": {
             "content": {

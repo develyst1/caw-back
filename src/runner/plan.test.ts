@@ -7,8 +7,10 @@ const card = (number: number, over: Partial<PlanInput["workable"][number]> = {})
 const run = (over: object = {}) => ({ id: "r1", hopBudget: 3, endedAt: null as string | null, ...over });
 const hop = (cardId: string, outcome: HopOutcome | null, over: object = {}) => ({ id: `h-${cardId}-${outcome}`, cardId, workerId: "w1", runId: "r1", outcome, endedAt: outcome === null ? null : "t", ...over });
 const base = (over: Partial<PlanInput> = {}): PlanInput => ({
-  mode: "dispatcher", openRun: run(), runCanReopen: false, hopRunning: false, reviewFailed: null, pendingMessage: null, entryWorkerId: "entry", workable: [card(1), card(2)], hopsInRun: [], ...over,
+  mode: "dispatcher", openRun: run(), runCanReopen: false, hopRunning: false, busyWorkers: [], busyCards: [], reviewFailed: null, pendingMessage: null, entryWorkerId: "entry", workable: [card(1), card(2)], hopsInRun: [], ...over,
 });
+/** the action `start_hops` with these (cardId, workerId) pairs, in order */
+const starts = (...hops: [string, string][]) => ({ kind: "start_hops" as const, hops: hops.map(([cardId, workerId]) => ({ cardId, workerId })) });
 
 describe("manual mode", () => {
   test("no open run → nothing to do", () => {
@@ -29,17 +31,20 @@ describe("automatic mode — no open run", () => {
 });
 
 describe("automatic mode — an open run", () => {
-  test("a hop is running → one at a time: nothing", () => {
-    expect(planTick(base({ hopRunning: true }))).toEqual({ kind: "idle" });
+  test("a worker's hop is running → one per worker: that worker starts nothing (and the run is not ended)", () => {
+    expect(planTick(base({ hopRunning: true, busyWorkers: ["w1"], busyCards: ["c1"] }))).toEqual({ kind: "idle" });
   });
-  test("none running → the lowest-numbered workable card, with its assignee", () => {
-    expect(planTick(base({ workable: [card(2), card(1, { assigneeId: "w9" })] }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w9" });
+  test("one per worker, not per project: while w1's hop runs, a second idle worker's card starts", () => {
+    expect(planTick(base({ hopRunning: true, busyWorkers: ["w1"], busyCards: ["c1"], workable: [card(1), card(2, { assigneeId: "w2" })] }))).toEqual(starts(["c2", "w2"]));
+  });
+  test("none running → each idle worker gets its lowest-numbered workable card, lowest number first", () => {
+    expect(planTick(base({ workable: [card(2), card(1, { assigneeId: "w9" })] }))).toEqual(starts(["c1", "w9"], ["c2", "w1"]));
   });
   test("workable is in the API's order, but the lowest NUMBER wins regardless", () => {
-    expect(planTick(base({ workable: [card(5), card(3), card(4)] }))).toEqual({ kind: "start_hop", cardId: "c3", workerId: "w1" });
+    expect(planTick(base({ workable: [card(5), card(3), card(4)] }))).toEqual(starts(["c3", "w1"]));
   });
   test("a card with no assignee has no worker: skipped, the next one is taken", () => {
-    expect(planTick(base({ workable: [card(1, { assigneeId: null }), card(2)] }))).toEqual({ kind: "start_hop", cardId: "c2", workerId: "w1" });
+    expect(planTick(base({ workable: [card(1, { assigneeId: null }), card(2)] }))).toEqual(starts(["c2", "w1"]));
   });
   test("nothing workable → the run ends: nothing_workable", () => {
     expect(planTick(base({ workable: [] }))).toEqual({ kind: "finish_run", runId: "r1", reason: "nothing_workable" });
@@ -59,20 +64,20 @@ describe("automatic mode — an open run", () => {
 describe("which cards are taken again within one run (a failed card must not be hopped in a loop)", () => {
   test("a card whose hop FAILED or was STOPPED is left where it is: the next card is taken", () => {
     for (const outcome of ["failed", "stopped"] as const) {
-      expect(planTick(base({ hopsInRun: [hop("c1", outcome)] }))).toEqual({ kind: "start_hop", cardId: "c2", workerId: "w1" });
+      expect(planTick(base({ hopsInRun: [hop("c1", outcome)] }))).toEqual(starts(["c2", "w1"]));
     }
   });
   test("a card already hopped by this worker in this run (even `commented`, status unchanged) is not hopped again", () => {
-    expect(planTick(base({ hopsInRun: [hop("c1", "commented")] }))).toEqual({ kind: "start_hop", cardId: "c2", workerId: "w1" });
+    expect(planTick(base({ hopsInRun: [hop("c1", "commented")] }))).toEqual(starts(["c2", "w1"]));
   });
   test("an INTERRUPTED hop does not count: that card is still owed its turn", () => {
-    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "interrupted")] }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w1" });
+    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "interrupted")] }))).toEqual(starts(["c1", "w1"]));
   });
   test("the same card for a DIFFERENT worker (handed off) is a new turn", () => {
-    expect(planTick(base({ workable: [card(1, { assigneeId: "w2" })], hopsInRun: [hop("c1", "handed_off")] }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w2" });
+    expect(planTick(base({ workable: [card(1, { assigneeId: "w2" })], hopsInRun: [hop("c1", "handed_off")] }))).toEqual(starts(["c1", "w2"]));
   });
   test("the only card, commented once → it gets a second turn (SPEC-116 D1)", () => {
-    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "commented")], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w1" });
+    expect(planTick(base({ workable: [card(1)], hopsInRun: [hop("c1", "commented")], openRun: run({ hopBudget: 9 }) }))).toEqual(starts(["c1", "w1"]));
   });
   test("commented twice and still workable → no_progress, naming the card", () => {
     const hops = [hop("c1", "commented", { id: "a" }), hop("c1", "commented", { id: "b" })];
@@ -83,8 +88,8 @@ describe("which cards are taken again within one run (a failed card must not be 
   });
   test("c1 commented once and c2 untouched → c2 goes first, c1's second turn after", () => {
     const hops = [hop("c1", "commented")];
-    expect(planTick(base({ hopsInRun: hops, openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "start_hop", cardId: "c2", workerId: "w1" });
-    expect(planTick(base({ hopsInRun: [...hops, hop("c2", "failed")], openRun: run({ hopBudget: 9 }) }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w1" });
+    expect(planTick(base({ hopsInRun: hops, openRun: run({ hopBudget: 9 }) }))).toEqual(starts(["c2", "w1"]));
+    expect(planTick(base({ hopsInRun: [...hops, hop("c2", "failed")], openRun: run({ hopBudget: 9 }) }))).toEqual(starts(["c1", "w1"]));
   });
   test("several stuck cards → the lowest-numbered is the one named", () => {
     const hops = [hop("c2", "failed"), hop("c1", "failed")];
@@ -121,12 +126,15 @@ describe("a chat message is the operator\'s go for one chat hop, in either mode 
   test("dispatcher with NO open run and no reason to open one → still the chat hop (typing is the go, not the mode)", () => {
     expect(planTick(base({ openRun: null, runCanReopen: false, pendingMessage: msg }))).toEqual({ kind: "start_chat_hop", messageId: "m1", workerId: "entry" });
   });
-  test("it waits for a running hop, card or chat — one hop at a time per project", () => {
-    expect(planTick(base({ hopRunning: true, pendingMessage: msg }))).toEqual({ kind: "idle" });
-    expect(planTick(base({ mode: "manual", openRun: null, hopRunning: true, pendingMessage: msg }))).toEqual({ kind: "idle" });
+  test("it waits for a running hop of the ENTRY worker, card or chat — one hop per worker (REQ-122)", () => {
+    expect(planTick(base({ hopRunning: true, busyWorkers: ["entry"], pendingMessage: msg, workable: [] }))).toEqual({ kind: "idle" }); // (no card to start: only the chat is in question)
+    expect(planTick(base({ mode: "manual", openRun: null, hopRunning: true, busyWorkers: ["entry"], pendingMessage: msg }))).toEqual({ kind: "idle" });
+  });
+  test("a running hop of ANOTHER worker does not hold the chat back", () => {
+    expect(planTick(base({ hopRunning: true, busyWorkers: ["w1"], busyCards: ["c1"], pendingMessage: msg }))).toEqual({ kind: "start_chat_hop", messageId: "m1", workerId: "entry" });
   });
   test("no entry worker → no chat hop (main logs it once per message); the cards go on", () => {
-    expect(planTick(base({ pendingMessage: msg, entryWorkerId: null }))).toEqual({ kind: "start_hop", cardId: "c1", workerId: "w1" });
+    expect(planTick(base({ pendingMessage: msg, entryWorkerId: null }))).toEqual(starts(["c1", "w1"]));
     expect(planTick(base({ mode: "manual", openRun: null, pendingMessage: msg, entryWorkerId: null }))).toEqual({ kind: "idle" });
   });
   test("a chat hop does not touch the run: it is taken even when the run\'s budget is spent", () => {
@@ -138,5 +146,41 @@ describe("a chat message is the operator\'s go for one chat hop, in either mode 
   });
   test("a run that must end (a card sent back twice) ends first", () => {
     expect(planTick(base({ pendingMessage: msg, reviewFailed: "c1" }))).toEqual({ kind: "finish_run", runId: "r1", reason: "failed_review_twice" });
+  });
+});
+
+// REQ-122 (SPEC-120 D5.2): every idle worker starts its next card in the same tick — one hop per worker and per card, within the run's budget
+describe("the team works in parallel (REQ-122)", () => {
+  const three = [card(1, { assigneeId: "w1" }), card(2, { assigneeId: "w2" }), card(3, { assigneeId: "w3" })];
+  test("(a) 3 workers with 1 fresh card each, budget 5 → all 3 start at once, lowest number first", () => {
+    expect(planTick(base({ workable: [three[2]!, three[0]!, three[1]!], openRun: run({ hopBudget: 5 }) }))).toEqual(starts(["c1", "w1"], ["c2", "w2"], ["c3", "w3"]));
+  });
+  test("(b) room for 2 with 3 idle workers → only the 2 lowest-numbered start", () => {
+    expect(planTick(base({ workable: three, openRun: run({ hopBudget: 2 }) }))).toEqual(starts(["c1", "w1"], ["c2", "w2"]));
+    // the hops already in the run count against the room: budget 3, one hop used → room 2
+    expect(planTick(base({ workable: three, openRun: run({ hopBudget: 3 }), hopsInRun: [hop("c9", "commented", { workerId: "w9" })] }))).toEqual(starts(["c1", "w1"], ["c2", "w2"]));
+  });
+  test("(c) SPEC-120's boundary case: card #1 is workable for BE while SA's hop on #1 runs → #1 is not started; BE's other card is", () => {
+    const hops = [hop("c1", null, { workerId: "sa" })];
+    expect(planTick(base({ workable: [card(1, { assigneeId: "be" }), card(2, { assigneeId: "be" })], hopRunning: true, busyWorkers: ["sa"], busyCards: ["c1"], hopsInRun: hops, openRun: run({ hopBudget: 9 }) }))).toEqual(starts(["c2", "be"]));
+  });
+  test("(d) one worker with 2 workable cards → only its lowest-numbered one", () => {
+    expect(planTick(base({ workable: [card(2), card(1)], openRun: run({ hopBudget: 9 }) }))).toEqual(starts(["c1", "w1"]));
+  });
+  test("(e) a chat message while the ENTRY worker is busy → no chat hop; the other idle workers' cards start", () => {
+    expect(planTick(base({ pendingMessage: { id: "m1" }, hopRunning: true, busyWorkers: ["entry"], workable: [card(1, { assigneeId: "w1" }), card(2, { assigneeId: "w2" })] }))).toEqual(starts(["c1", "w1"], ["c2", "w2"]));
+  });
+  test("(f) no room while hops run → idle; no room and nothing running → budget_spent", () => {
+    const running = [hop("c1", null, { workerId: "w1" })];
+    expect(planTick(base({ openRun: run({ hopBudget: 1 }), hopsInRun: running, hopRunning: true, busyWorkers: ["w1"], busyCards: ["c1"] }))).toEqual({ kind: "idle" });
+    expect(planTick(base({ openRun: run({ hopBudget: 1 }), hopsInRun: [hop("c1", "commented")] }))).toEqual({ kind: "finish_run", runId: "r1", reason: "budget_spent" });
+  });
+  test("(g) nothing startable while another hop runs → idle (the run is not ended no_progress / nothing_workable); once nothing runs, the old ending applies", () => {
+    const spent = [hop("c1", "failed")];
+    const opts = { workable: [card(1)], hopsInRun: spent, openRun: run({ hopBudget: 9 }) };
+    expect(planTick(base({ ...opts, hopRunning: true, busyWorkers: ["w2"] }))).toEqual({ kind: "idle" });
+    expect(planTick(base({ ...opts, workable: [], hopRunning: true, busyWorkers: ["w2"] }))).toEqual({ kind: "idle" });
+    expect(planTick(base(opts))).toEqual({ kind: "finish_run", runId: "r1", reason: "no_progress", cardId: "c1" });
+    expect(planTick(base({ ...opts, workable: [] }))).toEqual({ kind: "finish_run", runId: "r1", reason: "nothing_workable" });
   });
 });

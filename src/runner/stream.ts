@@ -14,6 +14,9 @@ export type StreamSummary = {
   tokensIn: number | null; tokensOut: number | null; isError: boolean | null; subtype: string | null; blocks: Block[]; limit: Limit | null;
   /** what the session started with (the `system/init` message) and the four token numbers apart — for the log, not the store */
   init: Init | null; usage: Usage | null;
+  /** REQ-122 r2: the session's context at the task's end = the LAST model call's prompt (input + cacheCreation + cacheRead of the last assistant message); null without one.
+   *  Not `usage`: that adds up every call of the task (TEST-121 DEF-1). */
+  lastContext: number | null;
 };
 
 type Json = Record<string, any>;
@@ -100,6 +103,9 @@ export class StreamState {
     return added;
   }
 
+  /** a `result` line was read: with an open worker (REQ-122) that is the end of one task */
+  get done(): boolean { return this.result !== null; }
+
   summary(): StreamSummary {
     // The final `result` has the real totals. A hop the runner ends first has none: then the assistant messages' own usage, each distinct message
     // once. Input is exact (it matched the recorded result); output is a LOWER BOUND — an assistant line carries the count from when the message began.
@@ -117,9 +123,13 @@ export class StreamState {
       limit: this.limit,
       init: this.init,
       usage,
+      lastContext: lastContextOf([...this.assistantUsage.values()].at(-1)),
     };
   }
 }
+
+/** one call's prompt size: everything the model read for it */
+const lastContextOf = (u: Usage | undefined): number | null => (u === undefined ? null : u.input + u.cacheCreation + u.cacheRead);
 
 export function summarize(lines: Iterable<string>): StreamSummary {
   const st = new StreamState();

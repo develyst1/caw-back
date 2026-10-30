@@ -8,6 +8,7 @@ import { chainOf3, newCard, setup } from "../../test/helpers/api";
 import { RunnerApiError, createApi } from "./api";
 import { HOOKS } from "./config";
 import { type Child, type HopDeps, NOTES, buildArgs, buildMcpConfig, childEnv, folderOutsideWorkspace, refusalOf, refusedNote, runHop } from "./hop";
+import { WorkerPool } from "./pool";
 import { type Procs, readHopFile } from "./procs";
 import { fakeChild, fixture, hopAware, limitFixture } from "./testkit";
 import { formatReset } from "./thai";
@@ -593,6 +594,21 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     expect(c.spawned[0]!.cmd[2]).toContain(c.project.id);
     expect(c.spawned[0]!.cmd[2]).toContain("chat_context");
   });
+  // REQ-122 (SPEC-120 Q1): chat hops stay one-shot even when the runner has a pool — `claude -p <prompt>`, stdin closed, nothing opened
+  test("REQ-122: with a pool in the deps a CHAT hop still spawns `-p <prompt>` with stdin ignored, and opens no worker", async () => {
+    const c = await chatWorld();
+    c.deps.pool = new WorkerPool({ tmpRoot: c.tmpRoot, log: () => {}, procs: { inspect: () => null, groupAlive: () => false, killGroup: () => {}, sleep: async () => {} }, killGraceMs: 10 });
+    const stdins: (string | undefined)[] = [];
+    const real = c.deps.spawn;
+    c.deps.spawn = (cmd, opts) => { stdins.push(opts.stdin); return real(cmd, opts); };
+    await run(c, async () => { await c.reply(); });
+    const cmd = c.spawned[0]!.cmd;
+    expect(cmd[1]).toBe("-p");
+    expect(cmd[2]).toContain(c.msg.id); // the prompt is argv, as before
+    expect(cmd).not.toContain("--input-format");
+    expect(stdins).toEqual([undefined]);
+    expect(c.deps.pool.sessions()).toEqual([]);
+  });
   // REQ-118 (SPEC-117 D2.2, AC-2): the chat hop's system-prompt file carries every requirement of the spec. The hop's folder goes when the hop ends, so the file is read WHILE the stub child runs.
   const REQ = (n: number) => ({ key: `REQ-00${n}`, kind: "requirement", title: `ข้อกำหนด ${n}`, body: { text: `ระบบต้องทำข้อ ${n}\nบรรทัดสอง ${n}` }, origin: { date: "2026-10-30", stamp: "operator" } });
   // `noSkills`: the API never makes a worker without skills (min 1), so that case hands runHop a worker with `skills: []` directly
@@ -683,6 +699,179 @@ describe("a chat hop: the entry worker answers an operator message (TASK-C-034)"
     c.set(() => fakeChild({ lines: limitFixture().slice(0, 14), hang: true }));
     const r = await runHop(c.deps, await c.input());
     expect([(await c.finishedChat()).outcome, r.limit?.status]).toEqual(["stopped", "rejected"]);
+  });
+});
+
+// REQ-122 (SPEC-120 D1/D3/D4): with a pool, a card hop is one TASK on its worker's open process — a stream-json user message on stdin, over at the `result` line
+describe("an open worker: a card hop is a task on its worker's open process (REQ-122)", () => {
+  type Task = { n: number; prompt: string; hopFileId: string };
+  type Script = (t: Task) => Promise<"die" | void>;
+  /** a scripted open `claude`: its stdout stays open across tasks; every stdin line runs `onTask` (the worker's MCP calls, as API calls), then the recorded `ok` stream — ending in a `result` — is printed */
+  function openStub(cmd: string[], onTask: Script, streamOf: (n: number) => string[] = () => fixture("ok")) {
+    const enc = new TextEncoder();
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    let done!: (code: number) => void;
+    const exited = new Promise<number>((r) => { done = r; });
+    const close = (code: number) => { try { ctrl.close(); } catch { /* already closed */ } done(code); };
+    const mcp = JSON.parse(readFileSync(cmd[cmd.indexOf("--mcp-config") + 1]!, "utf8")).mcpServers.caw.env as { CAW_HOP_FILE?: string; CAW_HOP_ID?: string };
+    const written: string[] = [];
+    const child = {
+      killed: false, ended: false, written, mcp, exited,
+      stdout: new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } }),
+      stdin: {
+        write(line: string) {
+          written.push(line);
+          const n = written.length;
+          void (async () => {
+            const hopFileId = readFileSync(mcp.CAW_HOP_FILE!, "utf8").trim(); // the hop id on THIS task, as the real MCP server reads it
+            if ((await onTask({ n, prompt: JSON.parse(line).message.content, hopFileId })) === "die") { close(1); return; }
+            try { for (const l of streamOf(n)) ctrl.enqueue(enc.encode(`${l}\n`)); } catch { /* the process was ended meanwhile */ }
+          })();
+        },
+        end() { child.ended = true; close(0); },
+      },
+      kill(sig = "SIGTERM") { child.killed = true; close(sig === "SIGKILL" ? 137 : 143); },
+      stderrText: async () => "",
+    };
+    return child;
+  }
+
+  const noProcs: Procs = { inspect: () => null, groupAlive: () => false, killGroup: () => {}, sleep: async () => {} };
+
+  async function openWorld(over: { hopMaxMs?: number } = {}) {
+    const w = await world(over);
+    const pool = new WorkerPool({ tmpRoot: w.tmpRoot, log: (l) => w.log.push(l), procs: noProcs, killGraceMs: 10 });
+    w.deps.pool = pool;
+    const stubs: ReturnType<typeof openStub>[] = [];
+    const stdins: (string | undefined)[] = [];
+    const seen: string[] = []; // the hop id in the worker's hop file at each task
+    const cardOf = (prompt: string) => /Your card is (\S+)/.exec(prompt)![1]!;
+    // by default a task is what a worker does: one comment on its card, naming the hop it read from the file (as the MCP server does)
+    let script: Script = async (t) => { seen.push(t.hopFileId); await w.call("POST", `/v1/cards/${cardOf(t.prompt)}/comments`, { text: "done" }, w.actor, { "x-caw-hop": t.hopFileId }); };
+    let streamOf: (n: number) => string[] = () => fixture("ok"); // what each task prints (default: the recorded `ok` run)
+    w.deps.spawn = (cmd, opts) => { w.spawned.push({ cmd, cwd: opts.cwd }); stdins.push(opts.stdin); const s = openStub(cmd, (t) => script(t), (n) => streamOf(n)); stubs.push(s); return s as unknown as Child; };
+    const inputFor = async (hop: Awaited<ReturnType<typeof w.api.startHop>>, cardId: string) => ({ project: (await w.api.projects()).find((p) => p.id === w.project.id)!, hop, worker: (await w.api.workers()).find((x) => x.id === w.worker.id)!, card: await w.api.card(cardId) });
+    const hopOn = async (cardId: string) => w.api.startHop(w.project.id, { cardId, workerId: w.worker.id, claim: "inst-1" });
+    return { ...w, pool, stubs, stdins, seen, inputFor, hopOn, setScript: (s: Script) => { script = s; }, setStream: (f: (n: number) => string[]) => { streamOf = f; } };
+  }
+
+  /** a task's stream the way the CLI prints it: one assistant line per model call (each with that call's usage), then a `result` whose usage SUMS every call of the task (TEST-121 DEF-1) */
+  const callStream = (calls: { input: number; creation?: number; read?: number }[], sum: { input: number; creation?: number; read?: number }): string[] => [
+    ...calls.map((u, i) => JSON.stringify({ type: "assistant", message: { id: `msg_${i}`, usage: { input_tokens: u.input, cache_creation_input_tokens: u.creation ?? 0, cache_read_input_tokens: u.read ?? 0, output_tokens: 20 } } })),
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, usage: { input_tokens: sum.input, cache_creation_input_tokens: sum.creation ?? 0, cache_read_input_tokens: sum.read ?? 0, output_tokens: 60 } }),
+  ];
+  /** n more cards for the worker (the world's own two come first) */
+  const moreCards = async (o: Awaited<ReturnType<typeof openWorld>>, n: number) => {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push((await newCard(o.call, o.project.id, { title: `more ${i}`, assigneeId: o.worker.id })).json);
+    return out;
+  };
+
+  test("ONE child serves 3 hops: 3 messages on its stdin, each hop finished `commented`, every write carries that task's own hop id, the hop file is empty after", async () => {
+    const o = await openWorld();
+    const third = (await newCard(o.call, o.project.id, { title: "third", assigneeId: o.worker.id })).json;
+    const hops = [o.hop];
+    await runHop(o.deps, await o.input()); // hop 1: the world's own, on card #1
+    for (const card of [o.other, third]) {
+      const h = await o.hopOn(card.id);
+      hops.push(h);
+      await runHop(o.deps, await o.inputFor(h, card.id));
+    }
+    expect(o.spawned).toHaveLength(1);
+    expect(o.stdins).toEqual(["pipe"]);
+    const cmd = o.spawned[0]!.cmd;
+    expect(cmd.slice(1, 4)).toEqual(["-p", "--input-format", "stream-json"]);
+    expect(cmd.join(" ")).not.toContain("Your card is"); // the prompt is on stdin, not on the command line
+    const stub = o.stubs[0]!;
+    expect(stub.written).toHaveLength(3);
+    const cards = [o.card, o.other, third];
+    stub.written.forEach((line, i) => {
+      const m = JSON.parse(line);
+      expect([m.type, m.message.role]).toEqual(["user", "user"]);
+      expect(m.message.content).toContain(`Your card is ${cards[i]!.id}`);
+    });
+    const finished = (await o.api.hops(o.project.id)).filter((h) => hops.some((x) => x.id === h.id));
+    expect(finished.map((h) => h.outcome)).toEqual(["commented", "commented", "commented"]);
+    expect(o.seen).toEqual(hops.map((h) => h.id)); // x-caw-hop = each hop's own id, read per task from the file
+    expect(readFileSync(join(o.pool.dirOf(o.project.id, o.worker.id), "hop"), "utf8")).toBe(""); // between tasks a stray write gets hop_required
+    expect(o.pool.sessions()).toEqual([{ projectId: o.project.id, workerId: o.worker.id, state: "idle" }]);
+    expect(stub.killed).toBe(false); // the process lives on
+    expect(stub.mcp.CAW_HOP_FILE).toBeString();
+    expect(stub.mcp.CAW_HOP_ID).toBeUndefined(); // an open worker has no fixed hop id
+  });
+
+  test("a child that dies mid-task → the hop is `failed` with `exit 1` (today's rule), the pool drops it, and the NEXT hop spawns a new child", async () => {
+    const o = await openWorld();
+    o.setScript(async (t) => { if (t.n === 1) return "die"; });
+    const first = await runHop(o.deps, await o.input());
+    expect([first.hop.outcome, first.hop.note]).toEqual(["failed", expect.stringContaining("exit 1")]);
+    expect(first.hop.note).toContain(NOTES.noResult);
+    expect(o.pool.sessions()).toEqual([]); // dropped
+    expect(o.spawned).toHaveLength(1);
+    // the same worker's next task: a new process
+    o.setScript(async (t) => { await o.call("POST", `/v1/cards/${o.other.id}/comments`, { text: "done" }, o.actor, { "x-caw-hop": t.hopFileId }); });
+    const h2 = await o.hopOn(o.other.id);
+    const second = await runHop(o.deps, await o.inputFor(h2, o.other.id));
+    expect(second.hop.outcome).toBe("commented");
+    expect(o.spawned).toHaveLength(2);
+    expect(o.stubs[1]).not.toBe(o.stubs[0]);
+  });
+
+  test("the hop cap kills the open child: the hop is `stopped` with the timeout note, the worker is dropped, the next task starts a new process", async () => {
+    const o = await openWorld({ hopMaxMs: 150 });
+    o.setScript(async () => { await new Promise((r) => setTimeout(r, 1500)); }); // a task that never finishes in time
+    const r = await runHop(o.deps, await o.input());
+    expect(r.hop.outcome).toBe("stopped");
+    expect(r.hop.note).toContain(NOTES.timeout);
+    expect(o.stubs[0]!.killed).toBe(true);
+    expect(o.pool.sessions()).toEqual([]);
+  });
+
+  // REQ-122 round 2 (SPEC-120 D3 r2, TEST-121 DEF-1): the restart rule reads the session's REAL context — the last call's prompt — not the task's summed usage
+  test("(d) TEST-121 regression: tasks whose summed result usage is 241 000 each but whose last call's prompt is 54 865 → 5 tasks on ONE child with the default limit; the 6th restarts by the task count", async () => {
+    const o = await openWorld();
+    // a multi-call task: calls grow 25 849 → 40 000 → 54 865 (what the session really held), the result adds them up to 241 000 (≥ 238 884, the TEST-121 sum)
+    o.setStream(() => callStream([{ input: 100, read: 25_749 }, { input: 100, creation: 5_000, read: 34_900 }, { input: 65, creation: 4_800, read: 50_000 }], { input: 1_000, creation: 20_000, read: 220_000 }));
+    const cards = [o.card, ...(await moreCards(o, 5))]; // 6 cards: the world's `other` is not used
+    const outcomes: (string | null)[] = [];
+    for (let i = 0; i < 6; i++) {
+      const hop = i === 0 ? o.hop : await o.hopOn(cards[i]!.id);
+      const r = await runHop(o.deps, i === 0 ? await o.input() : await o.inputFor(hop, cards[i]!.id));
+      outcomes.push(r.hop.outcome);
+      if (i === 4) { // after 5 tasks: still ONE child, never restarted for its context
+        expect(o.spawned).toHaveLength(1);
+        expect(o.log.some((l) => l.includes("starting a new process"))).toBe(false);
+      }
+    }
+    expect(outcomes).toEqual(Array(6).fill("commented"));
+    expect(o.spawned).toHaveLength(2); // the 6th task: a new child …
+    const why = o.log.filter((l) => l.includes("starting a new process"));
+    expect(why).toHaveLength(1);
+    expect(why[0]).toContain("it has done 5 tasks"); // … because of the task count, not the context
+    expect(why[0]).not.toContain("last call's prompt");
+    expect(o.stubs[0]!.written).toHaveLength(5);
+    // the hop's own cost is the summed usage, as before: 1 000 + 20 000 + 220 000
+    const done = (await o.api.hops(o.project.id)).find((h) => h.id === o.hop.id)!;
+    expect(done.tokensIn).toBe(241_000);
+  });
+  test("(e) a task whose last call's prompt is 150 000 → the NEXT task starts a new child, and the log names `(the last call's prompt)`", async () => {
+    const o = await openWorld();
+    o.setStream(() => callStream([{ input: 100, read: 60_000 }, { input: 100, read: 149_900 }], { input: 200, read: 209_900 })); // last call = 150 000
+    await runHop(o.deps, await o.input());
+    expect(o.spawned).toHaveLength(1);
+    const h2 = await o.hopOn(o.other.id);
+    const r = await runHop(o.deps, await o.inputFor(h2, o.other.id));
+    expect(r.hop.outcome).toBe("commented");
+    expect(o.spawned).toHaveLength(2);
+    expect(o.stubs[0]!.ended).toBe(true); // the old one was ended (stdin EOF)
+    expect(o.log.some((l) => l.includes("its context reached 150000 tokens (the last call's prompt)"))).toBe(true);
+  });
+  test("a runner that is stopping does not touch the worker: the task's hop is left running for the next runner", async () => {
+    const o = await openWorld();
+    o.setScript(async () => { o.deps.stopping = () => true; }); // the runner is told to stop while the task runs
+    const r = await runHop(o.deps, await o.input());
+    expect(r.hop.endedAt).toBeNull(); // left running in the store
+    o.deps.stopping = undefined;
   });
 });
 

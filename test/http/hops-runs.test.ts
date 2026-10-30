@@ -19,8 +19,8 @@ test("a hop: 201 Hop (running) · a second one while it runs → 409 hop_running
   const h = await hopOn(call, project.id, c1.id, a.id);
   expect(h.status).toBe(201);
   expect(h.json).toEqual({ id: h.json.id, projectId: project.id, runId: null, claimedBy: null, cardId: c1.id, messageId: null, locatedKeys: null, workerId: a.id, startedAt: h.json.startedAt, lastActivityAt: h.json.startedAt, endedAt: null, outcome: null, tokensIn: null, tokensOut: null, note: "" });
-  const running = await hopOn(call, project.id, c2.id, b.id);
-  expect([running.status, running.json.error.code]).toEqual([409, "hop_running"]);
+  const running = await hopOn(call, project.id, c2.id, a.id); // REQ-122: the SAME worker has a hop running (another card makes no difference)
+  expect([running.status, running.json.error.code, running.json.error.message]).toEqual([409, "hop_running", "this worker already has a hop running"]);
   expect((await call("GET", P)).json.hopsUsed).toBe(0); // counted when it finishes
 
   const done = await finish(call, h.json.id, "handed_off", { tokensIn: 1200, tokensOut: 340, note: "ส่งต่อให้ Ben" });
@@ -92,6 +92,25 @@ test("REQ-120: no project-wide budget — dispatcher hopsUsed ≥ hopBudget no l
   expect(last.status).toBe(201);
   await finish(call, last.json.id);
   expect((await call("GET", P)).json.hopsUsed).toBe(5);
+});
+
+// REQ-122 (SPEC-120 D5.1): one running hop per worker and per card — not per project
+test("REQ-122: a second worker's hop on another card while the first hop runs → 201 (the team works in parallel)", async () => {
+  const { call, project, a, b, c1, c2, P } = await twoCards();
+  const first = await hopOn(call, project.id, c1.id, a.id);
+  const second = await hopOn(call, project.id, c2.id, b.id);
+  expect([first.status, second.status]).toEqual([201, 201]);
+  const running = (await call("GET", `${P}/hops`)).json.hops.filter((h: any) => h.endedAt === null);
+  expect(running.map((h: any) => h.workerId).sort()).toEqual([a.id, b.id].sort()); // both running at once
+});
+
+test("REQ-122: a hop on the same card by another worker while it runs → 409 hop_running `that card …`; the card is free again once the hop ends", async () => {
+  const { call, project, a, b, c1 } = await twoCards();
+  const first = await hopOn(call, project.id, c1.id, a.id);
+  const clash = await hopOn(call, project.id, c1.id, b.id);
+  expect([clash.status, clash.json.error.code, clash.json.error.message]).toEqual([409, "hop_running", "that card already has a hop running"]);
+  await finish(call, first.json.id);
+  expect((await hopOn(call, project.id, c1.id, b.id)).status).toBe(201);
 });
 
 test("GET hops: newest first, `limit`, `runId`", async () => {

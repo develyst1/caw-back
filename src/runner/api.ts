@@ -99,7 +99,7 @@ export function createApi(baseUrl: string, actor: string, fetchFn: Fetch = (url,
     /** contract v1.11: "this hop's stream is alive". No body — the core stamps the time and throttles to one write per 60 s (still 200). 409 `hop_not_running` once it ended. */
     heartbeat: (hopId: string) => call<{ lastActivityAt: string }>("POST", `/v1/hops/${enc(hopId)}/heartbeat`, actor),
     /** contract v1.16 rev. 1: "this runner is alive" (`running`) or "I am stopping" (`stopping`), runner actor only → 204 with NO body — the only call that may have an empty one */
-    checkIn: async (state: "running" | "stopping"): Promise<void> => { await call<unknown>("POST", "/v1/runner/check-in", actor, { state }, true); },
+    checkIn: async (state: "running" | "stopping", sessions?: { projectId: string; workerId: string; state: "idle" | "busy" }[]): Promise<void> => { await call<unknown>("POST", "/v1/runner/check-in", actor, { state, ...(sessions ? { sessions } : {}) }, true); },
     finishHop: (hopId: string, finish: Finish) => call<Hop>("PATCH", `/v1/hops/${enc(hopId)}`, actor, finish),
     /** REQ-104: a batch of what the hop's CLI showed (rendered and redacted by screen.ts), runner actor only → 202 `{ stored }`; a (hopId, seq) already stored is skipped */
     hopOutput: (hopId: string, entries: ScreenEntry[]) => call<{ stored: number }>("POST", `/v1/hops/${enc(hopId)}/output`, actor, { entries }),

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { type Api, type ApiEvent, type Card, type Finish, type Hop, type HopOutcome, type Project, type Worker, RunnerApiError, readOnlyOf } from "./api";
 import type { RunnerConfig } from "./config";
 import { type Thread, buildChatPrompt, buildPrompt, folderNames, loadSkills, requirementsBlock, threadOf, writeSkillsFile } from "./prompt";
+import { type OpenWorker, type WorkerPool, settleGroup, spawnKeyOf, terminate } from "./pool";
 import { type Procs, defaultHopsDir, realProcs, removeHopFile, writeHopFile } from "./procs";
 import type { Code } from "./bash-policy";
 import { redact } from "./redact";
@@ -35,8 +36,9 @@ export const NOTES = {
 } as const;
 
 /** `pid` is the child's process id; with the real spawner it is also its process group id (the child leads its own group). */
-export type Child = { pid?: number; stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(signal?: string): void; stderrText(): Promise<string> };
-export type Spawner = (cmd: string[], opts: { cwd: string; env: Record<string, string | undefined> }) => Child;
+export type Child = { pid?: number; stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(signal?: string): void; stderrText(): Promise<string>; stdin?: { write(line: string): void; end(): void } };
+/** `stdin: "pipe"` = an open worker (REQ-122): its tasks arrive as lines on `child.stdin`; without it stdin is closed, as for every one-shot hop */
+export type Spawner = (cmd: string[], opts: { cwd: string; env: Record<string, string | undefined>; stdin?: "pipe" }) => Child;
 
 export type HopDeps = {
   api: Api; config: RunnerConfig; spawn: Spawner;
@@ -63,16 +65,21 @@ export type HopDeps = {
   secrets?: readonly string[];
   /** per project: the last event seq seen, so "where am I now" is not a walk from 0 every hop */
   cursors: Map<string, number>;
+  /** REQ-122: the open workers. With a pool a CARD hop is a task on its worker's open process; without one (and for every chat hop) a hop is a one-shot `claude -p <prompt>`, as before. */
+  pool?: WorkerPool;
 };
 /** `card` is set for a card hop and absent for a chat hop (which has `hop.messageId` instead). */
 export type HopInput = { project: Project; hop: Hop; worker: Worker; card?: Card };
 
 /** Real child: Bun.spawn on its own handle — never pkill. `detached: true` (setsid) puts it in its OWN process group, so claude, its MCP server and its
  *  Bash children can be stopped together, and so a runner that dies hard leaves a group its successor can find (procs.ts). */
-export const bunSpawn: Spawner = (cmd, { cwd, env }) => {
-  const p = Bun.spawn(cmd, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+export const bunSpawn: Spawner = (cmd, { cwd, env, stdin }) => {
+  const piped = stdin === "pipe";
+  const p = Bun.spawn(cmd, { cwd, env, stdin: piped ? "pipe" : "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+  const sink = piped ? (p.stdin as unknown as { write(s: string): unknown; flush(): unknown; end(): unknown }) : undefined;
   return {
     pid: p.pid, stdout: p.stdout, exited: p.exited, stderrText: () => new Response(p.stderr).text(),
+    ...(sink ? { stdin: { write: (line: string) => { sink.write(line); sink.flush(); }, end: () => { sink.end(); } } } : {}),
     kill: (signal) => {
       const sig = (signal ?? "SIGTERM") as NodeJS.Signals;
       try { process.kill(-p.pid, sig); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ESRCH") return; p.kill(sig); } // the whole group, not just the pid
@@ -166,32 +173,15 @@ export function childEnv(env: Record<string, string | undefined>): Record<string
   return out;
 }
 
-/** After the leader is gone: is anything of its group still running (claude's MCP server, a Bash child that shrugged off SIGTERM)? Give it the grace
- *  period, then SIGKILL the group. True once the group is empty. */
-async function settleGroup(pgid: number, procs: Procs, graceMs: number, log: (line: string) => void): Promise<boolean> {
-  for (let waited = 0; waited < graceMs && procs.groupAlive(pgid); waited += 100) await procs.sleep(Math.min(100, graceMs));
-  if (procs.groupAlive(pgid)) {
-    log(`group ${pgid}: still has processes ${graceMs} ms after its leader ended — SIGKILL`);
-    try { procs.killGroup(pgid, "SIGKILL"); } catch (e) { log(`group ${pgid}: could not send SIGKILL: ${messageOf(e)}`); }
-    for (let waited = 0; waited < 2000 && procs.groupAlive(pgid); waited += 100) await procs.sleep(100);
-  }
-  return !procs.groupAlive(pgid);
-}
-
-/** SIGTERM now, SIGKILL after the grace period if it is still there — a child must not be able to keep a hop (and the repo) forever. */
-function terminate(child: Child, graceMs: number): void {
-  child.kill();
-  const t = setTimeout(() => child.kill("SIGKILL"), graceMs);
-  void child.exited.finally(() => clearTimeout(t));
-}
-
 const SERVER = fileURLToPath(new URL("../mcp/server.ts", import.meta.url));
 
 /** Only CAW's server (SPEC-A-008): with --strict-mcp-config no other MCP server — Slack, mail … — is reachable (R5). The server's
  *  cwd is the worker's folder, so its script is given by absolute path. */
-export function buildMcpConfig(apiUrl: string, workerId: string, hopId: string): object {
-  // CAW_HOP_ID (contract v1.5): the MCP server names this hop on every worker write, so a write of a hop that is no longer running is refused
-  return { mcpServers: { caw: { type: "stdio", command: process.execPath, args: ["run", SERVER], env: { CAW_API_URL: apiUrl, CAW_WORKER_ID: workerId, CAW_HOP_ID: hopId } } } };
+export function buildMcpConfig(apiUrl: string, workerId: string, hopId: string | null, hopFile?: string): object {
+  // CAW_HOP_ID (contract v1.5): the MCP server names this hop on every worker write, so a write of a hop that is no longer running is refused.
+  // An open worker (REQ-122) runs a new hop per task, so it gets CAW_HOP_FILE instead — the server reads the hop id from that file on every call — and NO CAW_HOP_ID.
+  const env = hopFile !== undefined ? { CAW_API_URL: apiUrl, CAW_WORKER_ID: workerId, CAW_HOP_FILE: hopFile } : { CAW_API_URL: apiUrl, CAW_WORKER_ID: workerId, CAW_HOP_ID: hopId ?? "" };
+  return { mcpServers: { caw: { type: "stdio", command: process.execPath, args: ["run", SERVER], env } } };
 }
 
 /** `--add-dir` and `--disallowedTools` take a LIST, so each is followed by another flag — never by the next positional. */
@@ -201,9 +191,10 @@ export function buildMcpConfig(apiUrl: string, workerId: string, hopId: string):
 const CHAT_READ_TOOLS = ["Read", "Glob", "Grep"];
 const CHAT_DENY = ["Bash", "Write", "Edit", "NotebookEdit", "Task", "WebFetch", "WebSearch"];
 
-export function buildArgs(a: { prompt: string; worker: Pick<Worker, "model" | "effort">; roots: string[]; settingsFile: string; mcpFile: string; skillsFile: string | null; chat?: boolean }): string[] {
+export function buildArgs(a: { prompt: string; worker: Pick<Worker, "model" | "effort">; roots: string[]; settingsFile: string; mcpFile: string; skillsFile: string | null; chat?: boolean; open?: boolean }): string[] {
   return [
-    "-p", a.prompt,
+    // an open worker (REQ-122) gets no prompt on the command line: each task is a stream-json user message on its stdin
+    ...(a.open ? ["-p", "--input-format", "stream-json"] : ["-p", a.prompt]),
     "--model", a.worker.model, "--effort", a.worker.effort,
     "--output-format", "stream-json", "--verbose",
     "--permission-mode", "acceptEdits",
@@ -339,8 +330,15 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
   const messageId = hop.messageId; // set = a CHAT hop: the entry worker answering an operator message (TASK-C-034)
   const workerActor = `worker:${worker.id}`; // who the MCP tools write as — the hop's own writes are the runner's (api.ts)
   const finish = (f: Finish) => api.finishHop(hop.id, f);
-  const dir = join(deps.tmpRoot, `hop-${hop.id}`);
+  // REQ-122: with a pool, a CARD hop is one task on its worker's open process and the folder is the worker's own; otherwise (chat, or no pool) it is a one-shot with its own folder
+  const open = messageId === null && deps.pool !== undefined;
+  const pool = deps.pool;
+  const dir = open ? pool!.dirOf(project.id, worker.id) : join(deps.tmpRoot, `hop-${hop.id}`);
+  const hopFile = join(dir, "hop"); // an open worker's MCP server reads the running hop's id from here on every call
   let spawnedPid: number | undefined;
+  let ow: OpenWorker | undefined; // the open worker this task runs on
+  let taskDone = false; // its `result` was read and nothing stopped it: the worker goes back to idle instead of being dropped
+  let tokensInOfTask: number | null = null;
   try {
     // Readable = roots; writable = roots − readOnly (D-100). A card hop works in the first WRITABLE root and reads the rest; a chat hop reads them all.
     const readOnly = readOnlyOf(project.workspace);
@@ -357,7 +355,7 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     const startSeq = await latestSeq(deps, project.id);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const mcpFile = join(dir, "mcp.json");
-    writeFileSync(mcpFile, JSON.stringify(buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
+    writeFileSync(mcpFile, JSON.stringify(open ? buildMcpConfig(config.apiUrl, worker.id, null, hopFile) : buildMcpConfig(config.apiUrl, worker.id, hop.id)), { mode: 0o600 });
     // A chat hop also carries every requirement of the spec, in the same system-prompt file — not argv: n × 4000 Thai characters can pass the single-argument limit (SPEC-117 D2.2)
     const systemText = messageId === null ? skills.text : [skills.text, await requirementsFor(deps, project.id)].filter((t) => t !== "").join("\n\n---\n\n");
     const skillsFile = systemText === "" ? null : writeSkillsFile(dir, systemText);
@@ -368,15 +366,29 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     // denies of a card hop (a chat hop writes nothing anyway). The base is read here, so a hop never runs on settings it could not read: it fails instead.
     const settingsFile = join(dir, "settings.json");
     const base = JSON.parse(readFileSync(deps.settingsFile, "utf8"));
-    writeFileSync(settingsFile, `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir), messageId === null ? readOnly : [], messageId === null ? (config.serverPorts ?? []) : []), null, 2)}\n`, { mode: 0o600 });
-    const args = buildArgs({ prompt, worker, roots: messageId !== null ? project.workspace.roots : roots, settingsFile, mcpFile, skillsFile, chat: messageId !== null });
+    const settingsText = `${JSON.stringify(withReadGuard(messageId === null ? withReadOnly(base, readOnly) : base, readableDirs(project.workspace.roots, dir), messageId === null ? readOnly : [], messageId === null ? (config.serverPorts ?? []) : []), null, 2)}\n`;
+    writeFileSync(settingsFile, settingsText, { mode: 0o600 });
+    const args = buildArgs({ prompt, worker, roots: messageId !== null ? project.workspace.roots : roots, settingsFile, mcpFile, skillsFile, chat: messageId !== null, open });
 
     // A child must never be started by a runner that is already stopping: nothing would be left to kill it.
     if (deps.stopping?.()) { log(`hop ${hop.id}: runner is stopping — not started, left running for the next runner to interrupt`); return hop; }
-    // a chat hop runs in its own private hop folder, never in the project's repo
-    const child = deps.spawn([config.claudeBin, ...args], { cwd: messageId !== null ? dir : roots[0]!, env: childEnv(process.env) });
+    let child: Child;
+    let stderr: Promise<string>;
+    if (open) {
+      // D1/D3: the worker's open process — reused, or started (again) first; this task's hop id goes into the file its MCP server reads
+      ow = await pool!.acquire({
+        projectId: project.id, workerId: worker.id, hopId: hop.id, cmd: [config.claudeBin, ...args], cwd: roots[0]!, env: childEnv(process.env), spawn: deps.spawn,
+        spawnKey: spawnKeyOf({ args, cwd: roots[0]!, settings: settingsText, skills: skills.text }),
+      });
+      writeFileSync(hopFile, hop.id, { mode: 0o600 });
+      child = ow.child;
+      stderr = ow.stderr;
+    } else {
+      // a chat hop runs in its own private hop folder, never in the project's repo
+      child = deps.spawn([config.claudeBin, ...args], { cwd: messageId !== null ? dir : roots[0]!, env: childEnv(process.env) });
+      stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
+    }
     spawnedPid = child.pid;
-    const stderr = child.stderrText().catch((e) => { log(`hop ${hop.id}: could not read claude's stderr: ${messageOf(e)}`); return ""; }); // drained from the start, so a full pipe can never stall the child
     const state = new StreamState();
     const end = { note: null as string | null };
     const refusals: Refusal[] = []; // every block in this hop, in order (SPEC-108 D4): none ends the hop except the REFUSAL_CAP-th
@@ -403,7 +415,9 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
           startedAt: new Date().toISOString(), lstart, runnerPid: process.pid, runnerLstart: procs.inspect(process.pid)?.lstart ?? "",
         });
       }
-      await readLines(child.stdout, (line) => {
+      // an open worker's task: one stream-json user message (the hop id and the hop file are already in place)
+      if (open) child.stdin!.write(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`);
+      const onLine = (line: string): boolean => {
         lines.push(line);
         try { for (const t of screenLines(line)) screen.push(liveRedact(t, secrets)); } catch (e) { log(`hop ${hop.id}: screen line skipped: ${messageOf(e)}`); }
         if (end.note === null && !beat.over && !beat.inFlight && !deps.stopping?.() && clock() - beat.lastSent >= HEARTBEAT_MS) {
@@ -436,8 +450,14 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
           return false;
         }
         return end.note === null;
-      }, log);
-      code = await child.exited;
+      };
+      if (open) {
+        // the open process's stream goes on after this task: read up to its `result` (D1.4), never to the end of the stream
+        for (;;) { const l = await ow!.lines.next(); if (l === null || !onLine(l) || state.done) break; }
+      } else await readLines(child.stdout, onLine, log);
+      taskDone = open && state.done && end.note === null;
+      // the task ended at its `result`: the process lives on (code 0, as for a clean hop). Anything else — the stream ended before a result (D4), a stop — waits for the process as before.
+      code = taskDone ? 0 : await child.exited;
     } catch (e) {
       stop(); // could not read its output: end it rather than leave a worker running unwatched in the repo
       throw e;
@@ -451,7 +471,9 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     }
 
     const sum = state.summary();
-    if (code !== 0 || sum.isError) log(`hop ${hop.id}: claude exit ${code}, is_error ${sum.isError}, stderr: ${(await stderr).slice(0, 300)}`);
+    tokensInOfTask = sum.lastContext; // REQ-122 r2: the context the session holds now, not the task's summed usage (the hop's own tokensIn / tokensOut, its cost, stay as they were) // REQ-122 r2: the context the session holds now, not the task's summed usage (the hop's own tokensIn / tokensOut, its cost, stay as they were)
+    // an open worker's stderr only ends with its process: a task that finished cleanly has nothing to read there yet
+    if (code !== 0 || sum.isError) log(`hop ${hop.id}: claude exit ${code}, is_error ${sum.isError}, stderr: ${(taskDone ? "" : await stderr).slice(0, 300)}`);
     log(`hop ${hop.id}: init: ${JSON.stringify(sum.init)}; usage: in ${sum.usage?.input ?? "-"}, cacheCreation ${sum.usage?.cacheCreation ?? "-"}, cacheRead ${sum.usage?.cacheRead ?? "-"}, out ${sum.usage?.output ?? "-"}`);
     if (state.unparsed > 0) log(`hop ${hop.id}: ${state.unparsed} line(s) were not JSON`);
     if (state.faults > 0) log(`hop ${hop.id}: ${state.faults} line(s) could not be read (unexpected shape)`);
@@ -487,14 +509,26 @@ async function runOne(deps: HopDeps, input: HopInput, box: { limit: Limit | null
     return await finish({ outcome: "failed", note: redact(NOTES.fault(msg)).slice(0, 300) });
   } finally {
     // the hop's result must not be replaced by a clean-up failure
-    try { rmSync(dir, { recursive: true, force: true }); } catch (e) { log(`hop ${hop.id}: could not remove ${dir}: ${messageOf(e)}`); }
+    // an open worker's folder is the worker's, not the hop's: it goes when the worker's process does (pool.ts)
+    if (!open) { try { rmSync(dir, { recursive: true, force: true }); } catch (e) { log(`hop ${hop.id}: could not remove ${dir}: ${messageOf(e)}`); } }
     // the hop is over: its file goes too — unless the runner is stopping, when the next runner needs it
     if (!deps.stopping?.()) {
       try {
-        // the file is the next runner's only way to find what is left of this hop: it goes only when the whole group is gone
-        const gone = spawnedPid === undefined || (await settleGroup(spawnedPid, deps.procs ?? realProcs, deps.killGraceMs ?? 5000, log));
-        if (gone) removeHopFile(deps.hopsDir ?? defaultHopsDir(), hop.id);
-        else log(`hop ${hop.id}: its process group ${spawnedPid} is still alive — the hop file is kept for the next runner`);
+        if (open) {
+          // the task is over: the hop id leaves the file (a stray write then gets hop_required), the hop file goes WITHOUT settling the group (the group is the open worker),
+          // and the worker is idle again — or, when the task did not end at its result (a stop, a crash: D4), the process is ended and the next task starts a new one
+          if (ow) {
+            try { writeFileSync(hopFile, ""); } catch (e) { log(`hop ${hop.id}: could not empty ${hopFile}: ${messageOf(e)}`); }
+            const gone = taskDone ? (pool!.release(ow, tokensInOfTask), true) : await pool!.end(ow, { removeDir: true });
+            if (gone) removeHopFile(deps.hopsDir ?? defaultHopsDir(), hop.id);
+            else log(`hop ${hop.id}: its worker's process group ${spawnedPid} is still alive — the hop file is kept for the next runner`);
+          }
+        } else {
+          // the file is the next runner's only way to find what is left of this hop: it goes only when the whole group is gone
+          const gone = spawnedPid === undefined || (await settleGroup(spawnedPid, deps.procs ?? realProcs, deps.killGraceMs ?? 5000, log));
+          if (gone) removeHopFile(deps.hopsDir ?? defaultHopsDir(), hop.id);
+          else log(`hop ${hop.id}: its process group ${spawnedPid} is still alive — the hop file is kept for the next runner`);
+        }
       } catch (e) { log(`hop ${hop.id}: could not remove its hop file: ${messageOf(e)}`); }
     }
   }
