@@ -16,9 +16,17 @@ import { requireOperator } from "../http/actor";
 import { ApiError, notFound } from "../http/errors";
 import { type Card, cardView } from "../cards/view";
 
-export type Proposal = ProposalState & { hopsTotal: number };
-/** `hopsTotal` is computed on read — the sum of the items' hops — never stored (harness §9). */
-export const proposalView = (p: ProposalState): Proposal => ({ ...p, hopsTotal: p.items.reduce((n, i) => n + i.hops, 0) });
+export type Proposal = ProposalState & { hopsTotal: number; onBoard: number[] };
+/** REQ-126 r2 (SPEC-126 D1): the work already on the board = the anchor keys of the project's OPEN work cards (not done), except a card whose part has left the spec (REQ-105 D12). Never the wording. */
+const liveCards = (s: State, key?: string) => s.cards.filter((c) => c.kind === "work" && c.status !== "done" && c.anchorRemovedRevision === null && (key === undefined || c.anchorKey === key));
+/** The indexes of an OPEN proposal's items whose anchor key is already on the board; [] for an accepted or superseded one. */
+export function onBoardOf(s: State, p: ProposalState): number[] {
+  if (p.status !== "open") return [];
+  const keys = new Set(liveCards(s).map((c) => c.anchorKey));
+  return p.items.flatMap((item, i) => (keys.has(item.anchor.key) ? [i] : []));
+}
+/** `hopsTotal` and `onBoard` are computed on read — never stored (harness §9). */
+export const proposalView = (s: State, p: ProposalState): Proposal => ({ ...p, hopsTotal: p.items.reduce((n, i) => n + i.hops, 0), onBoard: onBoardOf(s, p) });
 
 const projectIn = (s: State) => s.project ?? (() => { throw notFound("project"); })();
 const bad = (message: string) => new ApiError(400, "validation", message);
@@ -106,14 +114,14 @@ export async function propose(db: Db, blueprint: Blueprint, actor: Actor, hopId:
       supersedes: s.proposals.filter((p) => p.messageId === input.messageId && p.status === "open").map((p) => p.id),
     } };
   });
-  return proposalView(state.proposals.find((p) => p.id === id)!);
+  return proposalView(state, state.proposals.find((p) => p.id === id)!);
 }
 
 /** Newest first. */
 export async function listProposals(db: Db, projectId: string, messageId?: string): Promise<Proposal[]> {
   const s = await loadState(db, projectId);
   projectIn(s);
-  return s.proposals.filter((p) => messageId === undefined || p.messageId === messageId).sort((a, b) => (a.id < b.id ? 1 : -1)).map(proposalView);
+  return s.proposals.filter((p) => messageId === undefined || p.messageId === messageId).sort((a, b) => (a.id < b.id ? 1 : -1)).map((p) => proposalView(s, p));
 }
 
 // Accept (the operator): the anchors are re-checked against Blueprint first — any gone → 422, nothing written — then ONE transaction:
@@ -132,20 +140,25 @@ export async function accept(db: Db, blueprint: Blueprint, actor: Actor, proposa
   const { state } = await writeDecided(db, projectId, (s) => {
     const p = s.proposals.find((x) => x.id === proposalId) ?? (() => { throw notFound("proposal"); })();
     if (p.status !== "open") throw new ApiError(409, "not_open", `that proposal is ${p.status}`);
-    // REQ-126 (SPEC-125 D4): the same plan twice (a copy of an accepted one) must not make its cards again. "Same items" = same length and, per index, the same trimmed title, anchor key and worker.
-    const same = (a: ProposalItem[], b: ProposalItem[]) => a.length === b.length && a.every((x, i) => x.title.trim() === b[i]!.title.trim() && x.anchor.key === b[i]!.anchor.key && x.workerId === b[i]!.workerId);
-    if (s.proposals.some((x) => x.id !== proposalId && x.status === "accepted" && same(x.items, p.items))) throw new ApiError(409, "plan_already_accepted", "แผนนี้ตกลงไปแล้ว");
-    for (const [i, item] of p.items.entries()) {
+    // REQ-126 r2 (SPEC-126 D2): only the work not yet on the board becomes cards, judged by anchor key (D1), however the plan is worded or grouped.
+    // All of it on the board → 409, nothing written (round 1's identical copy is one case of this).
+    const onBoard = new Set(onBoardOf(s, p));
+    if (onBoard.size === p.items.length) throw new ApiError(409, "plan_already_accepted", "แผนนี้ตกลงไปแล้ว");
+    const fresh = p.items.flatMap((item, i) => (onBoard.has(i) ? [] : [{ item, i }]));
+    for (const { item, i } of fresh) {
       if (!s.members.includes(item.workerId)) throw new ApiError(400, "not_a_member", `items[${i}].workerId ${item.workerId} is no longer in this project's chain`);
     }
+    // a dependency on an item that is already on the board waits for the live card(s) holding that key instead
+    const dependsOn = (item: ProposalItem) => [...new Set(item.dependsOn.flatMap((j) => (onBoard.has(j) ? liveCards(s, p.items[j]!.anchor.key).map((c) => c.id) : [ids[j]!])))];
     const at = now();
     const first = Math.max(0, ...s.cards.map((c) => c.number)) + 1;
     return [
-      ...p.items.map((item, i) => ({ type: "card.created" as const, projectId, actor, at, data: {
-        id: ids[i]!, number: first + i, title: item.title, todo: item.todo, anchor: cardAnchor(item.anchor.key, reads.get(item.anchor.key)!), assigneeId: item.workerId, dependsOn: item.dependsOn.map((j) => ids[j]!),
+      ...fresh.map(({ item, i }, k) => ({ type: "card.created" as const, projectId, actor, at, data: {
+        id: ids[i]!, number: first + k, title: item.title, todo: item.todo, anchor: cardAnchor(item.anchor.key, reads.get(item.anchor.key)!), assigneeId: item.workerId, dependsOn: dependsOn(item),
       } })),
-      { type: "proposal.accepted" as const, projectId, actor, at, data: { proposalId, cardIds: ids } },
+      { type: "proposal.accepted" as const, projectId, actor, at, data: { proposalId, cardIds: fresh.map(({ i }) => ids[i]!) } },
     ];
   });
-  return ids.map((id) => cardView(state, state.cards.find((c) => c.id === id)!));
+  const made = state.proposals.find((x) => x.id === proposalId)!.cardIds!;
+  return made.map((id) => cardView(state, state.cards.find((c) => c.id === id)!));
 }

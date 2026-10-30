@@ -21,6 +21,7 @@ export const ProposalSchema = z.object({
   id: z.string(), projectId: z.string(), messageId: z.string(), version: z.number().int(), items: z.array(ProposalItemSchema),
   status: z.enum(["open", "accepted", "superseded"]), cardIds: z.array(z.string()).nullable(), createdAt: z.string(),
   hopsTotal: z.number().int().openapi({ description: "the sum of the items' hops, computed on read" }),
+  onBoard: z.array(z.number().int().min(0)).openapi({ description: "REQ-126 r2: indexes of the items whose spec part is already on a live work card of this project, computed on read; [] unless the proposal is open. All of them → accept answers 409 plan_already_accepted; some → accept makes cards for the others only" }),
 }).openapi("Proposal");
 
 export function proposalRoutes(app: OpenAPIHono<Env>, db: Db, blueprint: Blueprint) {

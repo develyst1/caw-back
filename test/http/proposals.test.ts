@@ -67,7 +67,7 @@ test("propose: 201 Proposal (2 items, one depends on the other); hopsTotal compu
   const first = await w.propose([w.item({ hops: 2 }), w.item({ title: "ทดสอบ", anchor: { key: "STEP-003", version: 1 }, dependsOn: [0], hops: 3 })]);
   expect(first.status).toBe(201);
   expect(first.json).toEqual({
-    id: first.json.id, projectId: w.project.id, messageId: w.msg.id, version: 1, status: "open", cardIds: null, hopsTotal: 5, createdAt: first.json.createdAt,
+    id: first.json.id, projectId: w.project.id, messageId: w.msg.id, version: 1, status: "open", cardIds: null, hopsTotal: 5, onBoard: [], createdAt: first.json.createdAt,
     items: [w.item({ hops: 2 }), w.item({ title: "ทดสอบ", anchor: { key: "STEP-003", version: 1 }, dependsOn: [0], hops: 3 })],
   });
   const second = await w.propose([w.item({ hops: 1 })]);
@@ -192,7 +192,7 @@ test("accept: a second accept → 409 not_open; a worker removed from the chain 
   const again = await w.call("POST", `/v1/proposals/${p1.id}/accept`);
   expect([again.status, again.json.error.code]).toEqual([409, "not_open"]);
 
-  const p2 = (await w.propose([w.item({ workerId: w.c.id })])).json;
+  const p2 = (await w.propose([w.item({ workerId: w.c.id, anchor: { key: "STEP-003", version: 1 } })])).json; // another part than p1's STEP-004: new work (REQ-126 r2), so the not_a_member path is still reached
   await w.call("DELETE", `${w.P}/chain/members/${w.c.id}`); // Cat has no open cards: removable
   const n = (await w.db.select().from(events)).length;
   const r = await w.call("POST", `/v1/proposals/${p2.id}/accept`);
